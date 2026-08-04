@@ -55,3 +55,14 @@
   question: 台積電現在的股價？
   expect_tools: [get_stock_quote]
   expect_contains: ["{trade_date}"]
+
+# scan_market 每檔一次 LLM 呼叫，比 screen_stocks 慢一個量級。這兩個案例
+# 一正一反，守住「該用時要用、不該用時別用」。
+- name: 描述性條件應走逐檔掃描
+  question: 找出今天收盤收在當日最高附近、買盤看起來強勢的股票
+  expect_tools: [scan_market]
+
+- name: 純數值條件不該用慢的掃描工具
+  question: 今天成交量最大的 5 檔是哪些？
+  expect_tools: [screen_stocks]
+  forbid_tools: [scan_market]

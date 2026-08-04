@@ -5,24 +5,16 @@ vLLM 必須以 tool calling 啟用的方式啟動（--enable-auto-tool-choice
 不呼叫工具 —— 用 verify_tool_calling() 可以先確認。
 """
 
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import create_react_agent
 
 from config import VLLM_BASE_URL, VLLM_MODEL
 
+from .llm import build_llm
 from .prompts import SYSTEM_PROMPT
 from .tools import ALL_TOOLS
 
-
-def build_llm() -> ChatOpenAI:
-    # temperature=0：查數據沒有創意需求，也讓 eval 結果可重現
-    return ChatOpenAI(
-        base_url=VLLM_BASE_URL,
-        api_key="dummy",  # vLLM 不驗證，但 client 要求非空
-        model=VLLM_MODEL,
-        temperature=0,
-    )
+__all__ = ["build_agent", "build_llm", "verify_tool_calling"]
 
 
 def build_agent(checkpointer=None):

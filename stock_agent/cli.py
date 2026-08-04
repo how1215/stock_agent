@@ -6,6 +6,7 @@ Agent 模式（會呼叫 vLLM）：
     python -m stock_agent.cli ask "今天大盤怎麼樣？"  單次查詢
     python -m stock_agent.cli ask "..." --trace      同時印出 tool 呼叫過程
     python -m stock_agent.cli verify                 檢查 vLLM 的 tool calling
+    python -m stock_agent.cli scan "收在最高的股票"    逐檔判讀掃描（直接跑 StateGraph）
 
 資料模式（純 JSON，不碰 LLM）— Pi extension 等外部工具走這條：
 
@@ -20,10 +21,14 @@ Agent 模式（會呼叫 vLLM）：
 import argparse
 import json
 import sys
+import time
 from uuid import uuid4
+
+from config import SCAN_MAX_CONCURRENCY
 
 from . import query
 from .agent import build_agent, verify_tool_calling
+from .scan import run_scan, scan_payload
 from .sources.cache import DataUnavailable
 from .trace import TraceHandler
 
@@ -87,6 +92,50 @@ def _emit_json(build) -> int:
     return 0
 
 
+def _run_scan(args) -> int:
+    """直接跑掃描 graph，不經 ReAct — 方便單獨驗證 graph 行為與量測延遲。"""
+    if args.json:
+        # Pi extension 等外部呼叫者走這條：契約與其他 JSON 子命令一致
+        return _emit_json(lambda: scan_payload(
+            args.focus,
+            sort_by=args.sort_by,
+            order=args.order,
+            limit=args.limit,
+            min_change_pct=args.min_change_pct,
+            min_volume=args.min_volume,
+            common_stock_only=not args.include_etf,
+            date=args.date,
+            max_concurrency=args.concurrency,
+        ))
+
+    started = time.perf_counter()
+    try:
+        result = run_scan(
+            args.focus,
+            sort_by=args.sort_by,
+            order=args.order,
+            limit=args.limit,
+            min_change_pct=args.min_change_pct,
+            min_volume=args.min_volume,
+            common_stock_only=not args.include_etf,
+            date=args.date,
+            max_concurrency=args.concurrency,
+        )
+    except (DataUnavailable, ValueError) as exc:
+        print(f"掃描失敗：{exc}", file=sys.stderr)
+        return 1
+
+    print(result["report"])
+    elapsed = time.perf_counter() - started
+    scanned = len(result["readings"])
+    print(
+        f"\n[掃描 {scanned} 檔，並行 {args.concurrency}，"
+        f"耗時 {elapsed:.1f}s（平均 {elapsed / max(1, scanned):.1f}s/檔）]",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="stock_agent", description="台股數據查詢 agent")
     parser.add_argument("--trace", action="store_true", help="印出 tool 呼叫過程")
@@ -97,6 +146,21 @@ def main() -> int:
     ask.add_argument("--trace", action="store_true", help="印出 tool 呼叫過程")
 
     sub.add_parser("verify", help="檢查 vLLM 的 tool calling 是否可用")
+
+    scan = sub.add_parser("scan", help="逐檔判讀掃描（跑 StateGraph，不經 ReAct）")
+    scan.add_argument("focus", help="要找什麼特徵，自然語言描述")
+    scan.add_argument("--sort-by", default="turnover",
+                      choices=["change_pct", "volume", "turnover", "close"])
+    scan.add_argument("--order", default="desc", choices=["desc", "asc"])
+    scan.add_argument("--limit", type=int, default=15)
+    scan.add_argument("--min-change-pct", type=float)
+    scan.add_argument("--min-volume", type=int)
+    scan.add_argument("--include-etf", action="store_true")
+    scan.add_argument("--concurrency", type=int, default=SCAN_MAX_CONCURRENCY,
+                      help=f"並行判讀數，預設 {SCAN_MAX_CONCURRENCY}")
+    scan.add_argument("--date", help="交易日 YYYY-MM-DD，省略取最新")
+    scan.add_argument("--json", action="store_true",
+                      help="輸出 JSON（stdout 只有 JSON），供外部工具呼叫")
 
     market = sub.add_parser("market", help="大盤指數（JSON）")
     market.add_argument("--date", help="交易日 YYYY-MM-DD，省略取最新")
@@ -139,6 +203,9 @@ def main() -> int:
         ok, message = verify_tool_calling()
         print(("通過：" if ok else "失敗：") + message)
         return 0 if ok else 1
+
+    if args.command == "scan":
+        return _run_scan(args)
 
     if args.command == "ask":
         return _run_once(args.question, args.trace)

@@ -42,6 +42,41 @@ def find_quotes(quotes: list[dict], keys: list[str]) -> tuple[list[dict], list[s
     return found, missing
 
 
+def shape_metrics(quote: dict) -> dict:
+    """從單日 OHLC 推導出的盤中型態指標。
+
+    只用單日資料 — 量增／量縮這類需要多日均量的判斷做不出來，要等本地
+    cache 累積足夠日檔。所有數值在這裡算完，LLM 只做文字判讀。
+
+    Returns:
+        amplitude_pct  振幅（高低差佔前收的百分比）
+        close_position 收盤位置（0 = 收在最低，100 = 收在最高）
+        body_pct       K 線實體（開收差佔前收的百分比）
+        gap_pct        開盤跳空（開盤相對前收的百分比）
+        任一項資料不足時為 None。
+    """
+    high, low, open_, close = quote["high"], quote["low"], quote["open"], quote["close"]
+    prev_close = quote["prev_close"]
+
+    def pct_of_prev(value: float | None) -> float | None:
+        if value is None or not prev_close:
+            return None
+        return value / prev_close * 100
+
+    span = None if high is None or low is None else high - low
+    close_position = None
+    if span is not None and close is not None:
+        # 高低同價（如一價到底的漲停）無法定義收盤位置
+        close_position = 100.0 if span == 0 else (close - low) / span * 100
+
+    return {
+        "amplitude_pct": pct_of_prev(span),
+        "close_position": close_position,
+        "body_pct": pct_of_prev(None if close is None or open_ is None else abs(close - open_)),
+        "gap_pct": pct_of_prev(None if open_ is None or prev_close is None else open_ - prev_close),
+    }
+
+
 def screen(
     quotes: list[dict],
     *,

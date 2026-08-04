@@ -61,6 +61,10 @@ def _check(case: dict, answer: str, calls: list[dict], truth: dict[str, str]) ->
         if expected not in called:
             failures.append(f"未呼叫 {expected}（實際：{called or '無'}）")
 
+    for forbidden in case.get("forbid_tools", []):
+        if forbidden in called:
+            failures.append(f"不該呼叫 {forbidden}（實際：{called}）")
+
     if (want_count := case.get("expect_tool_call_count")) is not None:
         target = case.get("expect_tools", [None])[0]
         actual = called.count(target)

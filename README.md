@@ -49,9 +49,16 @@ Note what the model did here: it passed *company names* rather than guessing tic
                            │ model selects tools
                            ▼
         ┌──────────────────────────────────────┐
-        │  tools.py    3 tools, LLM-facing     │
-        └──────────────────┬───────────────────┘
-                           ▼
+        │  tools.py    4 tools, LLM-facing     │
+        └────────┬─────────────────────┬───────┘
+                 │                     │ scan_market
+                 │                     ▼
+                 │     ┌──────────────────────────────────┐
+                 │     │  workflow/  custom StateGraph    │
+                 │     │  Send fan-out → per-stock LLM    │
+                 │     │  → reducer fan-in → summarise    │
+                 │     └──────────────────┬───────────────┘
+                 ▼                        │
         ┌──────────────────────────────────────┐
         │  query.py    structured results      │──► JSON CLI ──► Pi extension
         └──────────┬───────────────┬───────────┘                 (optional)
@@ -64,6 +71,8 @@ Note what the model did here: it passed *company names* rather than guessing tic
         │  sources/  cache ──► TWSE open API   │
         └──────────────────────────────────────┘
 ```
+
+Three of the four tools are simple lookups. The fourth, `scan_market`, mounts a **hand-written `StateGraph`** that fans out one LLM call per candidate stock and reduces the results — a shape the prebuilt ReAct loop structurally cannot express. [Why it earns its place, with measurements.](docs/DECISIONS.md#11-a-hand-written-stategraph-for-per-stock-fan-out)
 
 Two properties matter more than the box diagram:
 
@@ -82,6 +91,7 @@ Full data flow and layer responsibilities: [docs/ARCHITECTURE.md](docs/ARCHITECT
 | **Evals that don't rot** | Expected values are placeholders (`{taiex_close}`, `{close:2330}`) resolved against the data layer at run time, so cases stay valid as market data changes daily. |
 | **Honest failure over plausible answers** | The upstream endpoint serves only the latest trading day. A request for a date not in the local cache returns an explicit error instead of silently substituting today's numbers — a wrong-date answer is worse than a refusal. |
 | **Fail-loud dependency check** | vLLM silently ignores tool definitions unless launched with the right flags; `bind_tools` does *not* raise. `cli verify` turns that into an explicit pass/fail. |
+| **Fan-out with failure isolation** | The scan graph runs one LLM call per stock in parallel. A single branch that errors or returns unparseable output is recorded as a failure and the rest of the batch completes — no truncation, no cross-contamination between stocks. Measured 1.85× faster than serial on a compute-bound local model. |
 
 Trade-offs and rejected alternatives: [docs/DECISIONS.md](docs/DECISIONS.md).
 
@@ -114,6 +124,9 @@ uv run python -m stock_agent.cli ask "今天漲幅前 10 名是哪些股票？"
 
 # Show which tools were called, with latencies
 uv run python -m stock_agent.cli ask "台積電收多少？" --trace
+
+# Run the scan graph directly, bypassing the ReAct layer (useful for latency work)
+uv run python -m stock_agent.cli scan "收盤收在當日最高附近、買盤強勢" --limit 16
 ```
 
 Configuration is via `.env` (see `.env.example`):
@@ -179,13 +192,15 @@ Each of these was verified against live responses, and each is a plausible way t
 ## Testing and evaluation
 
 ```bash
-uv run pytest                      # 85 tests, ~0.4s, no network, no LLM
-uv run python evals/run_evals.py   # 8 behavioural cases, requires vLLM
+uv run pytest                      # 109 tests, ~0.4s, no network, no LLM
+uv run python evals/run_evals.py   # 10 behavioural cases, requires vLLM
 ```
 
 The two layers answer different questions.
 
 **`pytest` — is the deterministic logic correct?** Runs against recorded real API responses in `tests/fixtures/`, including a hand-added halted-stock row that the live data didn't contain that day. Covers date conversion, sign handling, empty-value defence, cache-hit behaviour (asserting no HTTP call is made), filtering and sorting, the tool text layer, and the JSON CLI contract including exit codes.
+
+The scan graph is covered here too, with a fake model injected — `build_scan_graph(llm)` takes the model as a parameter precisely so that fan-out branch counts, output parsing, and failure isolation are testable without a GPU.
 
 **`evals/` — does the agent behave?** Each case declares the tools that must be called, argument subsets that must match, strings that must appear, and strings that must **not** appear:
 
@@ -197,7 +212,9 @@ The two layers answer different questions.
   forbid_contains: ["{taiex_close}"]
 ```
 
-This is regression testing for prompt and tool-description changes: swap the model or reword a description, run the suite, and see immediately whether behaviour degraded. Current state: 8/8 passing on `gemma-4-31B-it-qat-w4a16-ct`.
+Two of the cases are a matched pair guarding tool *selection* cost — `scan_market` is an order of magnitude slower than `screen_stocks`, so one case asserts it is used for a descriptive condition and another asserts it is **not** used for a purely numeric one (`forbid_tools`).
+
+This is regression testing for prompt and tool-description changes: swap the model or reword a description, run the suite, and see immediately whether behaviour degraded. Current state: 10/10 passing on `gemma-4-31B-it-qat-w4a16-ct`.
 
 ## Observability
 
@@ -218,25 +235,31 @@ The purpose is to separate two failures that look identical in terminal output: 
 
 ```
 stock_agent/
-├── agent.py            ReAct agent assembly, vLLM client, tool-calling check
+├── agent.py            ReAct agent assembly, tool-calling check
+├── llm.py              vLLM client (separate module to avoid an import cycle)
 ├── prompts.py          system prompt (data limits, number discipline)
-├── tools.py            3 LLM-facing tools
+├── tools.py            4 LLM-facing tools
+├── scan.py             scan entry point: limits, concurrency, graph reuse
+├── workflow/           hand-written StateGraph for per-stock fan-out
+│   ├── state.py        state with an accumulating reducer + Send payload type
+│   ├── nodes.py        deterministic nodes and LLM nodes, separated
+│   └── graph.py        assembly; llm injected for testability
 ├── query.py            structured results + pre-rendered text
 ├── render.py           number formatting, shared by tools and CLI
-├── screen.py           filtering and sorting (pure functions)
+├── screen.py           filtering, sorting, single-day shape metrics
 ├── trace.py            JSONL callback handler
-├── cli.py              agent mode + JSON data mode
+├── cli.py              agent mode + scan mode + JSON data mode
 └── sources/
     ├── twse.py         fetch and normalise
     ├── schema.py       normalised field definitions
     └── cache.py        trading-day file cache
 
-tests/                  85 tests, fixtures recorded from live API
+tests/                  109 tests, fixtures recorded from live API
 evals/                  behavioural regression cases + runner
 .pi/                    optional Pi extension + agent instructions
 ```
 
-~1,600 lines of Python across implementation and tests; ~175 lines of TypeScript.
+~2,400 lines of Python across implementation and tests; ~175 lines of TypeScript.
 
 Dependencies are deliberately few: `langgraph`, `langchain-openai`, `langchain-core`, `httpx`, `python-dotenv`, `pyyaml`. Notably **no pandas** — 1,377 rows sort fine with `sorted()`, and the dependency only earns its place once rolling windows across multiple trading days are needed. ([Why](docs/DECISIONS.md#5-no-pandas))
 
@@ -248,8 +271,9 @@ Scoped out deliberately, with the reason in each case:
 - **Over-the-counter (TPEx)** — different field names, needs a normalisation layer extension.
 - **Institutional net buy/sell** (`fund/T86`) — the endpoint currently returns HTTP 302; path has changed.
 - **Fundamentals** — `BWIBBU_ALL` (P/E, P/B, yield) is verified working but is a different analytical axis.
-- **Technical indicators** (MA/RSI/MACD) — needs accumulated history in `data/`; this is also where pandas starts to pay off.
-- **Whole-market LLM reading** — scanning all 1,086 stocks individually exceeds a single context window and would need a custom `StateGraph` with fan-out/fan-in rather than the prebuilt ReAct agent. ([Note](docs/ARCHITECTURE.md#when-a-custom-stategraph-becomes-necessary))
+- **Technical indicators** (MA/RSI/MACD) and volume-trend patterns (量增/量縮) — these need multiple trading days of history, and the upstream endpoint only serves the latest day, so `data/` has to accumulate first. `scan_market` therefore judges single-day shape only.
+- **Scanning all 1,086 stocks** — `scan_market` is capped at 30 candidates. Going wider needs either a cheaper first-pass filter or a much faster model; at ~2.9 s/stock, 1,086 would take over an hour.
+- **Scheduled daily collection** — history currently accumulates only when a query happens to run. A cron/launchd job after market close would decouple accumulation from ad-hoc use, and is the prerequisite for the two items above.
 
 ## Disclaimer
 

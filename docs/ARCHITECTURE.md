@@ -6,15 +6,19 @@ How a question becomes an answer, what each layer is responsible for, and where 
 
 | Layer | Module | Responsibility | Knows about the LLM? |
 |---|---|---|---|
-| Agent | `agent.py` | ReAct loop, model client, checkpointing | yes |
+| Agent | `agent.py` | ReAct loop, checkpointing | yes |
+| Model | `llm.py` | vLLM client | yes |
 | Prompt | `prompts.py` | Data limits, tool-selection rules, number discipline | yes |
-| Tools | `tools.py` | 3 tool definitions, LLM-facing text, recoverable errors | yes |
+| Tools | `tools.py` | 4 tool definitions, LLM-facing text, recoverable errors | yes |
+| Scan | `scan.py`, `workflow/` | Per-stock fan-out graph | yes (nodes take it injected) |
 | Query | `query.py` | Structured results + pre-rendered `text` | no |
 | Render | `render.py` | Number formatting, wording | no |
-| Screen | `screen.py` | Filtering, sorting, code classification | no |
+| Screen | `screen.py` | Filtering, sorting, shape metrics, code classification | no |
 | Sources | `sources/` | Fetch, normalise, cache | no |
 
-Only the top three layers know an LLM exists. Everything from `query.py` down is ordinary, testable Python — which is why the test suite runs in 0.4 s with no network and no model.
+Everything from `query.py` down is ordinary, testable Python — which is why the test suite runs in 0.4 s with no network and no model. The scan graph also tests without a model, because `build_scan_graph(llm)` takes it as a parameter rather than constructing it.
+
+`llm.py` exists as its own module for a mundane reason worth stating: `agent.py` imports `tools.py` for the tool list, and `scan_market` inside `tools.py` needs a model. Putting `build_llm` in `agent.py` would make that a cycle.
 
 ## Request lifecycle
 
@@ -100,10 +104,39 @@ The design goal is to distinguish two failures that produce identical-looking te
 
 **Adding a Pi tool.** Register in `.pi/extensions/tw-stock.ts` against a JSON CLI subcommand. The extension holds no logic beyond argument marshalling and error unwrapping.
 
-## When a custom StateGraph becomes necessary
+## The scan graph: where a custom StateGraph earns its place
 
-`create_react_agent` fits this problem: ask a question, call one or two tools, answer. A hand-written `StateGraph` would be ceremony.
+`create_react_agent` fits most of this problem: ask a question, call one or two tools, answer. For those three tools a hand-written graph would be ceremony.
 
-That changes when the work no longer fits one context window. Reading all 1,086 common stocks individually — per-stock pattern interpretation, then an aggregate summary — is a map-reduce shape that needs explicit fan-out and fan-in, per-branch retry, and partial-failure handling. That is what `StateGraph` with `add_conditional_edges` is actually for, and it would be mounted back as a single tool on the ReAct agent rather than replacing it.
+One tool is different. `scan_market` answers open-ended descriptive questions — "find stocks that closed near their high with strong buying" — which cannot be expressed as numeric filters. Answering it means judging each candidate individually, and that is a map-reduce shape:
 
-Notably, this is also work a coding harness structurally cannot do: Pi has no sub-agents, and the fan-out has to happen somewhere that owns the model client. It is the one scenario where a second LLM layer below the harness would be justified rather than redundant.
+```
+START → select_candidates ──(no candidates)──────────► no_candidates → END
+                          └─(Send × N)──► read_one ──► aggregate → summarise → END
+```
+
+Three properties make this impossible in the ReAct loop:
+
+| Property | Why ReAct can't | LangGraph mechanism |
+|---|---|---|
+| Branch count decided at run time | Tool calls are enumerated by the model, one at a time | `Send` from a conditional edge |
+| N independent judgements in parallel | The loop is sequential by construction | Parallel node execution, `max_concurrency` |
+| Merge N results back into one state | No shared accumulator across tool calls | `Annotated[list, operator.add]` reducer |
+
+Deterministic and LLM nodes are deliberately separated. `select_candidates` (narrow 1,086 → N), `aggregate` (group by verdict), and `no_candidates` never touch a model — narrowing and counting are not judgement tasks. Only `read_one` and `summarise` call the model, and they receive it as a parameter so tests can inject a fake.
+
+Two design details that matter more than they look:
+
+**Branch payloads are minimal.** `Send` carries only `{focus, trade_date, quote}` — one stock, not the whole state. Branches cannot see each other, so one stock's reading cannot be influenced by another's. A single large prompt containing N stocks has no such guarantee.
+
+**Branch failure is contained.** `read_one` never raises. A model error, or output that doesn't match the expected format, produces a reading with an `error` field; `aggregate` separates those out and the remaining N−1 complete normally. With one big prompt, one bad generation loses the entire batch.
+
+The graph is mounted back as a single tool on the ReAct agent rather than replacing it — the agent still decides *whether* a question needs a scan at all, and an eval case guards against it reaching for the slow path on questions a numeric filter would answer.
+
+Measured behaviour and the honest limits of the parallelism are in [DECISIONS §11](DECISIONS.md#11-a-hand-written-stategraph-for-per-stock-fan-out).
+
+### Still out of reach
+
+Scanning all 1,086 common stocks. At ~2.9 s/stock the cap is 30 for a reason. Going wider needs a cheaper first pass or a much faster model, not a different graph shape.
+
+Notably, this whole tool is also work a coding harness structurally cannot do: Pi has no sub-agents, and the fan-out has to happen somewhere that owns the model client. It is the one place where an LLM layer below a harness would be justified rather than redundant.

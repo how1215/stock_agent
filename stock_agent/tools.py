@@ -10,7 +10,10 @@
 
 from langchain_core.tools import tool
 
+from config import MAX_SCAN_LIMIT
+
 from . import query, render
+from .scan import run_scan
 from .sources.cache import DataUnavailable
 
 
@@ -90,4 +93,58 @@ def screen_stocks(
     return render.render_screen(result["trade_date"], result["criteria"], result["matches"])
 
 
-ALL_TOOLS = [get_market_index, get_stock_quote, screen_stocks]
+@tool
+def scan_market(
+    focus: str,
+    sort_by: str = "turnover",
+    order: str = "desc",
+    limit: int = 15,
+    min_change_pct: float | None = None,
+    min_volume: int | None = None,
+    date: str | None = None,
+) -> str:
+    """對候選個股逐檔判讀，找出符合某種「說得出來但寫不成數字條件」的股票。
+
+    適用於開放式的描述性問題，例如「找出今天收盤收在最高、看起來買盤強勢的股票」、
+    「哪些股票今天開高走低、賣壓明顯」。這類條件無法用 screen_stocks 的數值篩選
+    表達，需要逐檔判讀。
+
+    比 screen_stocks 慢很多（每檔一次判讀），所以：
+    - 純數值條件（漲幅前 N 名、成交量最大）請用 screen_stocks，不要用這個
+    - 查特定幾檔請用 get_stock_quote
+
+    Args:
+        focus: 使用者想找的特徵，用自然語言描述，越具體越好。
+        sort_by: 先用哪個欄位挑候選：turnover（成交金額）、volume（成交股數）、
+            change_pct（漲跌幅）、close（收盤價）。預設 turnover 取市場焦點股。
+        order: desc 由大到小，asc 由小到大。
+        limit: 掃描幾檔，1 到 30。預設 15。越大越慢。
+        min_change_pct: 候選只留漲跌幅大於等於此值的個股。
+        min_volume: 候選只留成交股數大於等於此值的個股。
+        date: 交易日 YYYY-MM-DD，省略取最新交易日（建議省略）。
+    """
+    if not focus.strip():
+        return "請說明要找什麼特徵（focus），例如「收盤收在最高且成交金額大」。"
+
+    try:
+        result = run_scan(
+            focus,
+            sort_by=sort_by,
+            order=order,
+            limit=limit,
+            min_change_pct=min_change_pct,
+            min_volume=min_volume,
+            date=date,
+        )
+    except DataUnavailable as exc:
+        return f"查不到資料：{exc}"
+    except ValueError as exc:
+        return render.render_sort_field_error(str(exc))
+
+    report = result["report"]
+    if len(result.get("candidates", [])) >= MAX_SCAN_LIMIT:
+        report += f"\n（註：一次最多掃描 {MAX_SCAN_LIMIT} 檔，結果已截斷）"
+    return report
+
+
+ALL_TOOLS = [get_market_index, get_stock_quote, screen_stocks, scan_market]

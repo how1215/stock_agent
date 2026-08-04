@@ -37,6 +37,40 @@ class TestFindQuotes:
         assert len(found) == 1
 
 
+class TestShapeMetrics:
+    def test_computes_from_single_day_ohlc(self, day):
+        """以 2330 的實際數字驗算：開 2390 高 2395 低 2365 收 2370 前收 2425。"""
+        tsmc = next(q for q in day["quotes"] if q["code"] == "2330")
+        m = screen.shape_metrics(tsmc)
+        assert m["amplitude_pct"] == pytest.approx((2395 - 2365) / 2425 * 100, abs=1e-6)
+        assert m["close_position"] == pytest.approx((2370 - 2365) / (2395 - 2365) * 100, abs=1e-6)
+        assert m["body_pct"] == pytest.approx(abs(2370 - 2390) / 2425 * 100, abs=1e-6)
+        assert m["gap_pct"] == pytest.approx((2390 - 2425) / 2425 * 100, abs=1e-6)
+
+    def test_close_position_is_high_when_closing_at_the_top(self):
+        m = screen.shape_metrics(
+            {"open": 100.0, "high": 110.0, "low": 99.0, "close": 110.0, "prev_close": 100.0}
+        )
+        assert m["close_position"] == pytest.approx(100.0)
+
+    def test_flat_day_has_defined_close_position(self):
+        """一價到底（漲停鎖死）高低同價，不能除以零。"""
+        m = screen.shape_metrics(
+            {"open": 110.0, "high": 110.0, "low": 110.0, "close": 110.0, "prev_close": 100.0}
+        )
+        assert m["close_position"] == 100.0
+        assert m["amplitude_pct"] == 0.0
+
+    def test_missing_values_give_none_not_crash(self, day):
+        halted = next(q for q in day["quotes"] if q["code"] == "9299")
+        assert screen.shape_metrics(halted) == {
+            "amplitude_pct": None,
+            "close_position": None,
+            "body_pct": None,
+            "gap_pct": None,
+        }
+
+
 class TestScreen:
     def test_sorts_desc_by_default(self, day):
         rows = screen.screen(day["quotes"], sort_by="close", limit=10)

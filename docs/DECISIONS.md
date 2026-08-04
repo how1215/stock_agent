@@ -136,7 +136,38 @@ Decisions where a reasonable alternative existed, what was chosen, and what it c
 
 ---
 
-### 11. Two corrections worth recording
+### 11. A hand-written StateGraph for per-stock fan-out
+
+**Context.** Three of the four tools are lookups that the prebuilt ReAct agent handles fine. The fourth answers descriptive questions ("stocks that closed near their high with strong buying") that no numeric filter expresses, which means judging each candidate individually.
+
+**Decision.** A hand-written `StateGraph` in `workflow/`: `select_candidates` → `Send × N` → `read_one` (one LLM call per stock, parallel) → `aggregate` → `summarise`, mounted back onto the ReAct agent as one tool.
+
+**Why not just one big prompt with N stocks?** Three reasons, in order of how much they actually matter:
+
+1. **Failure containment.** One malformed generation loses the whole batch. With fan-out, a failed branch is recorded and the other N−1 complete.
+2. **No cross-contamination.** Branch payloads carry one stock each, so branches cannot see one another. A single prompt gives no such guarantee.
+3. **Parallelism.** Real, but smaller than expected — see below.
+
+**Measured.** Same 8 stocks, `gemma-4-31B-it-qat-w4a16-ct` on local vLLM:
+
+| Stocks | Concurrency | Wall clock | Per stock |
+|---|---|---|---|
+| 8 | 1 | 84.9 s | 10.6 s |
+| 8 | 8 | 45.9 s | 5.7 s |
+| 16 | 8 | 54.5 s | 3.4 s |
+| 16 | 16 | 46.6 s | 2.9 s |
+
+**The honest reading of these numbers.** Concurrency 8 buys 1.85× over serial, not 8×. The local model is compute-bound, so vLLM's continuous batching improves throughput but nowhere near linearly. A direct probe made this look worse than it is — 8 trivial concurrent requests showed almost no gain — but at realistic prompt sizes the batching does help: 16 stocks at concurrency 16 (46.6 s) costs about the same as 8 stocks at concurrency 8 (45.9 s), i.e. twice the work for the same wall clock. That is what set the default to 16.
+
+**Consequence.** `MAX_SCAN_LIMIT` is 30, far below `MAX_SCREEN_LIMIT` of 100, because here the limit is latency rather than context. Scanning all 1,086 common stocks would take over an hour and is explicitly out of scope. The tool description and system prompt both push numeric questions to `screen_stocks`, and an eval case with `forbid_tools` asserts the model doesn't reach for the slow path unnecessarily.
+
+**What it does not do.** Volume-trend judgements (量增/量縮) need a multi-day average, and the upstream endpoint only serves the latest trading day, so the model is given single-day shape metrics only — amplitude, close position within the day's range, body size, gap. Those are computed in `screen.shape_metrics()`, not by the model.
+
+---
+
+### 12. Three corrections worth recording
+
+**Verdict labels that are substrings of each other.** `read_one` asks the model for `符合` / `部分符合` / `不符合`. When the model ignores the delimited format, the fallback searches the raw text for a label — and the original implementation iterated the tuple in declaration order. `符合` is a substring of *both* other labels, so `"我認為不符合這個條件"` was classified as **符合**: the exact opposite conclusion, reported confidently. Found on the first end-to-end run with a fake model, before any real model saw it. The fix is to match longest-first, and the regression test asserts all three labels resolve correctly from unformatted text.
 
 **The tool-calling precondition is a silent failure.** vLLM ignores tool definitions unless launched with `--enable-auto-tool-choice --tool-call-parser <parser>`. `bind_tools` raises nothing; the model simply never emits a tool call and instead answers from memory — plausibly, and wrongly. `cli verify` turns this into an explicit check, and it is the first step in the README because nothing else works without it.
 

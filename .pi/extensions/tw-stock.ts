@@ -172,4 +172,60 @@ export default function (pi: ExtensionAPI) {
       return toResult(await runCli(args, signal));
     },
   });
+
+  pi.registerTool({
+    name: "stock_scan",
+    label: "台股逐檔判讀",
+    description:
+      "對候選台股個股逐檔判讀，找出符合「說得出來但寫不成數字條件」的股票，例如「收盤收在最高、買盤強勢」、「開高走低、賣壓明顯」。每檔一次模型判讀，很慢（15 檔約 45 秒）。",
+    promptSnippet: "逐檔判讀台股，找符合描述性特徵的股票（慢）",
+    promptGuidelines: [
+      "純數值條件（漲幅前 N 名、成交量最大）一律用 stock_screen，不要用這個。",
+      "查特定幾檔用 stock_quote。",
+      "這個工具耗時數十秒，只在描述性條件真的無法用數值篩選表達時才用。",
+    ],
+    parameters: Type.Object({
+      focus: Type.String({
+        description: "要找的特徵，自然語言描述，越具體越好",
+        minLength: 1,
+      }),
+      sortBy: StringEnum(["turnover", "volume", "change_pct", "close"] as const, {
+        description: "先用哪個欄位挑候選；turnover 取市場焦點股",
+      }),
+      order: StringEnum(["desc", "asc"] as const),
+      limit: Type.Integer({
+        minimum: 1,
+        maximum: 30,
+        description: "掃描幾檔；越大越慢，建議 10–20",
+      }),
+      minChangePct: Type.Optional(Type.Number({ description: "候選只留漲跌幅 ≥ 此值" })),
+      minVolume: Type.Optional(Type.Integer({ minimum: 0, description: "候選只留成交股數 ≥ 此值" })),
+      date: Type.Optional(Type.String({ description: "交易日 YYYY-MM-DD，省略取最新" })),
+    }),
+    async execute(_id, params, signal, onUpdate) {
+      // 這個工具動輒數十秒，先回報進度免得看起來像卡住
+      onUpdate?.({
+        content: [{
+          type: "text",
+          text: `正在逐檔判讀 ${params.limit} 檔（每檔一次模型呼叫，預計數十秒）…`,
+        }],
+      });
+
+      const args = [
+        "scan",
+        params.focus,
+        "--json",
+        "--sort-by",
+        params.sortBy,
+        "--order",
+        params.order,
+        "--limit",
+        String(params.limit),
+        ...flag("--min-change-pct", params.minChangePct),
+        ...flag("--min-volume", params.minVolume),
+        ...flag("--date", params.date),
+      ];
+      return toResult(await runCli(args, signal));
+    },
+  });
 }
