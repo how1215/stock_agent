@@ -114,6 +114,8 @@ Decisions where a reasonable alternative existed, what was chosen, and what it c
 
 ### 9. Two-tier verification
 
+*(Counts below are current: 154 tests, 12 eval cases.)*
+
 **Context.** How do you know an LLM agent still works after changing a prompt?
 
 **Decision.** Two suites with different jobs.
@@ -126,13 +128,19 @@ Decisions where a reasonable alternative existed, what was chosen, and what it c
 
 ---
 
-### 10. Pi as an optional thin shell
+### 10. Pi as the day-to-day interface, still holding no logic
 
-**Decision.** `.pi/extensions/tw-stock.ts` registers three typed tools that shell out to the JSON CLI. It holds no application logic. Deleting it changes nothing.
+**Original decision.** `.pi/extensions/tw-stock.ts` registers typed tools that shell out to the JSON CLI, as an optional convenience.
+
+**Revised.** Pi is now the intended daily driver for the assistant, with six tools. The Python ReAct agent (`cli ask`) is kept as a second interface and as the vehicle for the eval suite.
+
+**Why this doesn't contradict §1.** §1 argues against a coding harness as a **product runtime** — no service interface, an arbitrary-code-execution `bash` tool, session logs that can't support evaluation, an agent loop you don't control. None of that applies to a personal terminal tool for one user on their own machine. What §1 actually protects is *where the logic lives*, and that hasn't moved: Pi still holds nothing but argument marshalling and error unwrapping, and deleting the extension leaves the system fully functional through the CLI.
 
 **Implementation notes.** `node:child_process.execFile` rather than `pi.exec`, because `execFile`'s non-zero-exit behaviour (throws, with `stdout`/`stderr` attached) is well-defined and the CLI's error contract puts `{"error": …}` on stdout — the handler needs to unwrap that specific shape. `import.meta.url` locates the project root so the tools work regardless of the caller's working directory. Pi has no MCP support by design, so a CLI-backed extension is the supported integration path rather than a workaround.
 
-**Status.** The CLI contract is covered by tests and the TypeScript passes a syntax check; a live Pi session has not been run, as `pi` was not installed in the development environment.
+**One deliberate asymmetry.** The extension exposes watchlist `add` and `remove` but not `clear`; the ReAct agent's watchlist tool is read-only. A human is watching a Pi session, so incremental edits are fine there — but wiping the list on a misread instruction is not worth the convenience, and the Python agent has no such human check at all.
+
+**Status.** The CLI contract is covered by tests and the TypeScript passes a syntax check; a live Pi session has not been run, as `pi` is not installed in the development environment.
 
 ---
 
@@ -165,7 +173,67 @@ Decisions where a reasonable alternative existed, what was chosen, and what it c
 
 ---
 
-### 12. Three corrections worth recording
+### 12. Pre-market, not intraday
+
+**Context.** Building a market-watching assistant naturally suggests live quotes. Three readings of "analyse the opening data" were on the table: pre-market homework from the previous close, a snapshot shortly after the open, or continuous intraday monitoring.
+
+**Constraint.** The TWSE open API serves end-of-day data only — during market hours it returns the *previous* trading day, and `OpeningPrice` is that day's open. Intraday means a second data source: `mis.twse.com.tw/stock/api/getStockInfo.jsp`, which works (verified) but is undocumented, needs a `Referer` header, uses abbreviated field names (`o`/`h`/`l`/`z`/`tv`), has no SLA, and would require a second parser and field mapping.
+
+**Decision.** Pre-market only. The briefing runs at 08:30 on the previous close.
+
+**Rationale.** Pre-market homework — where is the index, how did my watchlist close, what moved — is genuinely useful and needs no new data source. Intraday monitoring additionally needs poll scheduling, state diffing, alert de-duplication, and rate-limit backoff. That is a larger project resting on an endpoint that can break without notice.
+
+**Consequence.** The assistant cannot answer "what is happening right now". The report and prompts state the trading date explicitly so this is never ambiguous. Volume-trend judgements (量增/量縮) also remain out of reach for a different reason: they need a multi-day average, and history only accumulates from daily runs.
+
+---
+
+### 13. Scheduling on the OS, not in the agent
+
+**Context.** The briefing needs to run every trading day before the open.
+
+**Decision.** macOS `launchd`, weekdays 08:30, via `scripts/install-launchd.sh` and a wrapper script. No scheduler inside the application.
+
+**Rationale.** Neither Pi nor the Python agent has a scheduler, and adding one would mean a long-lived process to keep alive. launchd already solves "run this at a time, log the output, survive reboots". The wrapper exists because launchd provides almost no environment — `uv` has to be located explicitly rather than assumed on `PATH`.
+
+**Two behaviours that mattered more than the scheduling itself:**
+
+*Weekend and holiday runs must not overwrite.* The job always runs with `--refresh`, but `get_briefing` compares the newest available trading day against what the existing report was already based on and returns `skipped` when they match. Measured: 0.6 s to skip versus 81 s to generate.
+
+*Incoherent dates are rejected.* An early version accepted `--report-date 2020-01-02` and cheerfully wrote "盤前提要 2020-01-02（依據 2026-08-03 收盤）" — a file whose two dates contradict each other but which looks entirely normal. A pre-market report must be based on data from *before* its own date, so a trading date later than the report date now raises.
+
+**Consequence.** macOS-specific. A Linux deployment would need a cron entry or systemd timer; the wrapper script is portable, the plist is not.
+
+**Side effect that matters more than the feature.** Running daily is the only way `data/` accumulates — the endpoint has no date parameter, so a day not fetched is lost permanently. The scheduled job is therefore the prerequisite for moving averages, volume ratios, and anything else needing history.
+
+---
+
+### 14. The briefing reads from disk by default
+
+**Context.** Generating a briefing takes ~81 s (measured: 48.9 s for a four-stock watchlist fan-out, 32.1 s for the closing paragraph).
+
+**Decision.** `get_briefing` returns the saved report unless `refresh=True`. The scheduled job is what normally writes it.
+
+**Rationale.** An assistant that takes 81 s to answer "what should I watch today" is one you stop using. Reading the file is instantaneous. The generation cost is real but it belongs at 08:30 when nobody is waiting.
+
+**Consequence.** The tool description and Pi guidelines have to be explicit that `refresh` is expensive, or the model will use it for politeness. The `text` field in the JSON payload carries the whole report, so a Pi tool call is one subprocess and no formatting work.
+
+---
+
+### 15. A judgement axis that actually discriminates
+
+**Context.** The briefing reads each watchlist holding through the scan graph, which classifies as `符合` / `部分符合` / `不符合` against a stated focus.
+
+**What went wrong.** The first focus was "is this worth paying attention to at today's open". Every single holding came back `符合` — correctly, since a collapsing stock is also worth attention. The verdict column carried zero information.
+
+**Decision.** Narrow the focus to something falsifiable: did the stock close with buying pressure (closed up, closed near the day's high, no significant fade from the open). Now `不符合` is itself useful — in the sample run 台積電 (−2.27 %, close position 17 of 100) is correctly separated from 聯發科 (+9.99 %, close position 100).
+
+**Also.** The report prints the axis above the readings. Without it, a reader has no way to know what `符合` means, and the classification is worse than useless because it looks meaningful.
+
+**Generalisation worth keeping.** A classification prompt that cannot produce the negative class is not classifying. This is cheap to spot by eyeballing one real run, and invisible in unit tests with a stubbed model.
+
+---
+
+### 16. Three corrections worth recording
 
 **Verdict labels that are substrings of each other.** `read_one` asks the model for `符合` / `部分符合` / `不符合`. When the model ignores the delimited format, the fallback searches the raw text for a label — and the original implementation iterated the tuple in declaration order. `符合` is a substring of *both* other labels, so `"我認為不符合這個條件"` was classified as **符合**: the exact opposite conclusion, reported confidently. Found on the first end-to-end run with a fake model, before any real model saw it. The fix is to match longest-first, and the regression test asserts all three labels resolve correctly from unformatted text.
 

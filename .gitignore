@@ -13,6 +13,8 @@ wheels/
 .env
 data/
 traces/
+reports/
+logs/
 .pytest_cache/
 
 # 本地工具設定（不進版控）

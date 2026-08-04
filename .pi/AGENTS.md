@@ -4,14 +4,33 @@
 
 ## 工具怎麼選
 
+- `stock_briefing` — 「今天盤前提要」、「今天要注意什麼」。讀已生成的報告，即時
+- `stock_watchlist` — 「我的自選股」、加入／移除關注的股票
 - `stock_market` — 大盤、盤勢、加權指數
 - `stock_quote` — 特定幾檔個股。**一次把所有代號放進 `codes`**，不要一檔呼叫一次
 - `stock_screen` — 需要掃過整個市場的排名或篩選（漲幅前 N 名、成交量最大、漲超過幾 %）
 - `stock_scan` — 描述性條件，寫不成數值篩選的（「收盤收在最高、買盤強勢」、
   「開高走低、賣壓明顯」）。**每檔一次模型判讀，15 檔約 45 秒**
 
-前三個幾乎即時（資料層約 6ms）。`stock_scan` 慢一個量級，**純數值條件一律用
-`stock_screen`**，不要為了「看起來仔細」而改用 `stock_scan`。
+除了 `stock_scan` 與 `stock_briefing({refresh: true})`，其餘都幾乎即時（資料層約 6ms）。
+
+**純數值條件一律用 `stock_screen`**，不要為了「看起來仔細」而改用 `stock_scan`。
+問「我關注的股票」時用 `stock_watchlist`，**不要**用 `stock_screen` 去猜使用者關注什麼。
+
+## 盤前提要
+
+`stock_briefing` 預設讀每日排程已生成的報告。`refresh: true` 會重新跑（約 80 秒），
+只在使用者明確要求重新產生時才用。
+
+報告有**兩個日期**且不相同：
+
+- **報告日** = 今天（檔名用這個）
+- **依據的交易日** = 前一交易日（內文標題寫「依據 YYYY-MM-DD 收盤」）
+
+轉述時照報告內文的日期講。說「今天的數據」是錯的——盤前提要用的是前一交易日收盤。
+
+自選股區塊有一行「判斷軸」，說明「符合／不符合」是針對什麼條件判的。轉述判讀結果時
+要把判斷軸講清楚，否則「符合」沒有意義。
 
 不確定股票代號時，直接把公司名稱傳給 `stock_quote`（例如 `["台積電"]`），
 **不要憑記憶猜代號**——上市普通股有 1086 檔，猜錯不會報錯只會查不到。
@@ -42,5 +61,8 @@
 工具會透過 `uv run python -m stock_agent.cli` 呼叫專案的 Python CLI，
 所以 `uv` 要在 PATH 上、且專案依賴已安裝（`uv sync`）。
 
-前三個工具不需要 vLLM。**`stock_scan` 需要 vLLM 在跑**——它會對每檔候選各發一次
-模型呼叫。vLLM 沒起來時該工具會失敗，其餘三個照常可用。
+`stock_market` / `stock_quote` / `stock_screen` / `stock_watchlist` 不需要 vLLM。
+
+**`stock_scan` 與 `stock_briefing({refresh: true})` 需要 vLLM 在跑**——它們會對每檔
+候選各發一次模型呼叫。vLLM 沒起來時只有這兩個會失敗，其餘照常可用；
+`stock_briefing` 讀既有報告也不需要 vLLM。

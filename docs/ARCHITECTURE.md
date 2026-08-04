@@ -9,11 +9,14 @@ How a question becomes an answer, what each layer is responsible for, and where 
 | Agent | `agent.py` | ReAct loop, checkpointing | yes |
 | Model | `llm.py` | vLLM client | yes |
 | Prompt | `prompts.py` | Data limits, tool-selection rules, number discipline | yes |
-| Tools | `tools.py` | 4 tool definitions, LLM-facing text, recoverable errors | yes |
-| Scan | `scan.py`, `workflow/` | Per-stock fan-out graph | yes (nodes take it injected) |
+| Tools | `tools.py` | 6 tool definitions, LLM-facing text, recoverable errors | yes |
+| Scan | `scan.py`, `workflow/graph.py` | Per-stock fan-out graph | yes (injected into nodes) |
+| Briefing | `briefing.py`, `workflow/briefing.py` | Daily briefing graph, cache/skip decision | yes (injected into nodes) |
 | Query | `query.py` | Structured results + pre-rendered `text` | no |
 | Render | `render.py` | Number formatting, wording | no |
-| Screen | `screen.py` | Filtering, sorting, shape metrics, code classification | no |
+| Screen | `screen.py` | Filtering, sorting, breadth, shape metrics, code classification | no |
+| Watchlist | `watchlist.py` | Personal list, validated against market data | no |
+| Report | `report.py` | Report file I/O, deterministic composition | no |
 | Sources | `sources/` | Fetch, normalise, cache | no |
 
 Everything from `query.py` down is ordinary, testable Python — which is why the test suite runs in 0.4 s with no network and no model. The scan graph also tests without a model, because `build_scan_graph(llm)` takes it as a parameter rather than constructing it.
@@ -140,3 +143,53 @@ Measured behaviour and the honest limits of the parallelism are in [DECISIONS §
 Scanning all 1,086 common stocks. At ~2.9 s/stock the cap is 30 for a reason. Going wider needs a cheaper first pass or a much faster model, not a different graph shape.
 
 Notably, this whole tool is also work a coding harness structurally cannot do: Pi has no sub-agents, and the fan-out has to happen somewhere that owns the model client. It is the one place where an LLM layer below a harness would be justified rather than redundant.
+
+## The briefing graph: static parallelism and subgraph composition
+
+The daily pre-market briefing is a second hand-written graph, and it earns its place for different reasons than the scan graph.
+
+```
+START ─┬─► market_snapshot   index + breadth              (no LLM)
+       ├─► watchlist_read    scan graph as a subgraph     (N LLM calls)
+       └─► market_movers     gainers / losers / turnover  (no LLM)
+                  │
+                  ▼  join — compose_briefing waits for all three
+            compose_briefing   one LLM call over already-computed numbers
+                  │
+                  ▼
+            persist_report     deterministic markdown, written to disk
+                  │
+                 END
+```
+
+|  | scan graph | briefing graph |
+|---|---|---|
+| Parallelism | dynamic, homogeneous (N stocks, N known at run time) | static, heterogeneous (3 different jobs) |
+| Mechanism | `Send` from a conditional edge | three edges out of `START`, join at the shared successor |
+| Composition | none | mounts the scan graph as a subgraph |
+| State merge | `Annotated[list, operator.add]` reducer | none needed — branches write disjoint keys |
+
+The three branches are independent and all three must finish before anything can be synthesised. That is exactly LangGraph's join semantics; writing it as functions would mean managing a thread pool and the wait by hand.
+
+### Subgraph composition, and the config that doesn't propagate
+
+`watchlist_read` invokes the scan graph rather than reimplementing fan-out. `select_candidates` gained a second path for this: when `criteria["codes"]` is present it resolves those tickers via `screen.find_quotes()` instead of screening the whole market. Everything downstream — `Send`, `read_one`, `aggregate`, the failure isolation — is shared.
+
+One thing that caught us: **a subgraph does not inherit the parent's `config`.** The first version called `build_scan_graph(llm).invoke(state)` with no config, so the watchlist readings silently ran without the concurrency setting. Measured cost: about a minute extra on a four-stock watchlist. The fix is one explicit `config={"max_concurrency": SCAN_MAX_CONCURRENCY}`.
+
+### Where the time goes
+
+Per-node measurement of a real run with a four-stock watchlist:
+
+| Node | Time |
+|---|---|
+| `market_snapshot`, `market_movers` | 0.0 s (deterministic, parallel) |
+| `watchlist_read` (4 stocks, parallel) | 48.9 s |
+| `compose_briefing` (one call) | 32.1 s |
+| **Total** | **81.0 s** |
+
+The graph adds nothing measurable; the cost is entirely the two LLM nodes on a 31B local model. This is why the briefing is scheduled rather than interactive, and why `get_briefing` reads from disk by default — see [DECISIONS §14](DECISIONS.md#14-the-briefing-reads-from-disk-by-default).
+
+### Deterministic output, LLM commentary
+
+Only `compose_briefing` calls a model, and only for the closing paragraph. Section headers, the two dates, index figures, breadth counts, and every quote line are produced by `report.compose()`. If the model call fails, the observation becomes a failure note and the rest of the report is still complete and correct — asserted by a test.

@@ -83,18 +83,27 @@ def _facts(quote: dict) -> str:
 
 
 def select_candidates(state: ScanState) -> dict:
-    """篩出候選個股。純確定性 — 縮小範圍這件事不需要 LLM。"""
+    """挑出候選個股。純確定性 — 縮小範圍這件事不需要 LLM。
+
+    兩條路徑：`criteria["codes"]` 有指定就查那幾檔（自選股判讀走這條），
+    否則按條件篩全市場。共用同一條 fan-out，不必為自選股複製一套。
+    """
     day = cache.load_or_fetch(state.get("date"))
     criteria = state["criteria"]
-    candidates = screening.screen(
-        day["quotes"],
-        sort_by=criteria["sort_by"],
-        order=criteria.get("order", "desc"),
-        limit=criteria.get("limit", 20),
-        min_change_pct=criteria.get("min_change_pct"),
-        min_volume=criteria.get("min_volume"),
-        common_stock_only=criteria.get("common_stock_only", True),
-    )
+
+    if criteria.get("codes"):
+        candidates, _ = screening.find_quotes(day["quotes"], criteria["codes"])
+    else:
+        candidates = screening.screen(
+            day["quotes"],
+            sort_by=criteria["sort_by"],
+            order=criteria.get("order", "desc"),
+            limit=criteria.get("limit", 20),
+            min_change_pct=criteria.get("min_change_pct"),
+            min_volume=criteria.get("min_volume"),
+            common_stock_only=criteria.get("common_stock_only", True),
+        )
+
     index = next((i for i in day["indices"] if i["index_name"] == TAIEX_INDEX_NAME), None)
     return {
         "trade_date": day["trade_date"],

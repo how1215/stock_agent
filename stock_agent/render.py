@@ -79,5 +79,48 @@ def render_screen(trade_date: str, criteria: dict, matches: list[dict]) -> str:
     return "\n".join([header, *(quote_line(q) for q in matches)])
 
 
+def render_watchlist(described: dict) -> str:
+    """自選股清單。CLI 與 JSON payload 的 text 欄位共用。"""
+    if not described["codes"]:
+        return "自選股清單為空。用 `watchlist add <代號或名稱>` 加入。"
+
+    lines = [
+        f"交易日 {described['trade_date']}（上市）｜自選股 {len(described['codes'])} 檔",
+        *(quote_line(q) for q in described["quotes"]),
+    ]
+    if described.get("not_found"):
+        lines.append(
+            f"清單中查不到：{'、'.join(described['not_found'])}（可能已下市或代號有誤）"
+        )
+    return "\n".join(lines)
+
+
+_CHANGE_LABELS = (
+    ("加入", "added"),
+    ("已在清單", "already_present"),
+    ("移除", "removed"),
+    ("查不到", "not_found"),
+    ("不在清單中", "not_in_list"),
+)
+
+
+def render_watchlist_change(result: dict) -> str:
+    """add / remove / clear 的結果。always 回報操作後的完整清單，
+    讓使用者看得到實際發生了什麼，而不只是「成功」。"""
+    lines = []
+    for label, key in _CHANGE_LABELS:
+        rows = result.get(key) or []
+        if not rows:
+            continue
+        shown = [r if isinstance(r, str) else f"{r['code']} {r['name']}" for r in rows]
+        lines.append(f"{label}：{'、'.join(shown)}")
+
+    codes = result.get("codes", [])
+    watchlist = result.get("watchlist") or []
+    shown = "、".join(f"{w['code']} {w['name']}" for w in watchlist) or "、".join(codes)
+    lines.append(f"目前自選股（{len(codes)} 檔）：{shown or '（空）'}")
+    return "\n".join(lines)
+
+
 def render_sort_field_error(message: str) -> str:
     return f"參數錯誤：{message}。可用的排序欄位為 {'、'.join(SORTABLE_FIELDS)}。"

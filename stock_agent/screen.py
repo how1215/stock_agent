@@ -5,7 +5,7 @@
 交易日的 rolling window（移動平均、量能比）時再考慮引入 pandas。
 """
 
-from config import MAX_SCREEN_LIMIT
+from config import MAX_SCREEN_LIMIT, PRICE_LIMIT_PCT
 
 from .sources.schema import SORTABLE_FIELDS
 
@@ -40,6 +40,28 @@ def find_quotes(quotes: list[dict], keys: list[str]) -> tuple[list[dict], list[s
         else:
             found.append(quote)
     return found, missing
+
+
+def breadth(quotes: list[dict]) -> dict:
+    """市場寬度：漲跌平家數與漲跌停家數。
+
+    只計普通股 — 把 ETF 混進「上漲家數」會讓這個指標失去意義。
+    漲跌停用容差判定：台股限制 10%，但除權息與特殊情形會讓實際值略偏，
+    實測 2026-08-03 的漲停檔位都落在 9.9x～10.00% 之間。
+    """
+    rows = [q for q in quotes if is_common_stock(q["code"]) and q["change_pct"] is not None]
+
+    advancing = sum(1 for q in rows if q["change_pct"] > 0)
+    declining = sum(1 for q in rows if q["change_pct"] < 0)
+
+    return {
+        "total": len(rows),
+        "advancing": advancing,
+        "declining": declining,
+        "unchanged": len(rows) - advancing - declining,
+        "limit_up": sum(1 for q in rows if q["change_pct"] >= PRICE_LIMIT_PCT - 0.15),
+        "limit_down": sum(1 for q in rows if q["change_pct"] <= -PRICE_LIMIT_PCT + 0.15),
+    }
 
 
 def shape_metrics(quote: dict) -> dict:

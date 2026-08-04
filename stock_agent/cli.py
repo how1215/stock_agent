@@ -7,12 +7,15 @@ Agent 模式（會呼叫 vLLM）：
     python -m stock_agent.cli ask "..." --trace      同時印出 tool 呼叫過程
     python -m stock_agent.cli verify                 檢查 vLLM 的 tool calling
     python -m stock_agent.cli scan "收在最高的股票"    逐檔判讀掃描（直接跑 StateGraph）
+    python -m stock_agent.cli briefing               盤前簡報（有存檔就讀，沒有才生成）
+    python -m stock_agent.cli briefing --refresh     強制重新生成
 
 資料模式（純 JSON，不碰 LLM）— Pi extension 等外部工具走這條：
 
     python -m stock_agent.cli market
     python -m stock_agent.cli quote 2330 鴻海
     python -m stock_agent.cli screen --sort-by volume --limit 10
+    python -m stock_agent.cli watchlist              自選股（list / add / remove / clear）
 
 資料模式的契約：**stdout 只有 JSON**，日誌一律走 stderr；失敗時 exit code 非 0
 且 stdout 給 {"error": "..."}。外部呼叫者依賴這個契約，不要在 stdout 印別的東西。
@@ -26,8 +29,9 @@ from uuid import uuid4
 
 from config import SCAN_MAX_CONCURRENCY
 
-from . import query
+from . import query, render, watchlist
 from .agent import build_agent, verify_tool_calling
+from .briefing import get_briefing
 from .scan import run_scan, scan_payload
 from .sources.cache import DataUnavailable
 from .trace import TraceHandler
@@ -136,6 +140,56 @@ def _run_scan(args) -> int:
     return 0
 
 
+def _run_briefing(args) -> int:
+    """盤前簡報。預設讀存檔 — 生成要幾十秒，每次現場等會讓助手不好用。"""
+    if args.json:
+        return _emit_json(lambda: get_briefing(
+            report_date=args.report_date, date=args.date, refresh=args.refresh
+        ))
+
+    started = time.perf_counter()
+    try:
+        result = get_briefing(
+            report_date=args.report_date, date=args.date, refresh=args.refresh
+        )
+    except (DataUnavailable, ValueError) as exc:
+        print(f"簡報產生失敗：{exc}", file=sys.stderr)
+        return 1
+
+    print(result["text"])
+    note = {
+        "cache": "讀取既有報告",
+        "generated": f"重新生成，耗時 {time.perf_counter() - started:.1f}s",
+        "skipped": result.get("skipped", "沒有新交易日資料"),
+    }[result["source"]]
+    print(f"\n[{note}｜報告日 {result['report_date']}]", file=sys.stderr)
+    return 0
+
+
+def _run_watchlist(args) -> int:
+    """自選股。clear 只在 CLI 提供，不開放給 LLM 工具或 Pi extension。"""
+    actions = {
+        "list": lambda: watchlist.describe(args.date),
+        "add": lambda: watchlist.add(args.keys, args.date),
+        "remove": lambda: watchlist.remove(args.keys, args.date),
+        "clear": watchlist.clear,
+    }
+    run = actions[args.action or "list"]
+
+    if args.json:
+        return _emit_json(run)
+
+    try:
+        result = run()
+    except (DataUnavailable, ValueError) as exc:
+        print(f"操作失敗：{exc}", file=sys.stderr)
+        return 1
+
+    # text 欄位由 render.py 產生，與 JSON payload 完全一致
+    print(result["text"])
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="stock_agent", description="台股數據查詢 agent")
     parser.add_argument("--trace", action="store_true", help="印出 tool 呼叫過程")
@@ -161,6 +215,19 @@ def main() -> int:
     scan.add_argument("--date", help="交易日 YYYY-MM-DD，省略取最新")
     scan.add_argument("--json", action="store_true",
                       help="輸出 JSON（stdout 只有 JSON），供外部工具呼叫")
+
+    briefing = sub.add_parser("briefing", help="盤前簡報（預設讀存檔）")
+    briefing.add_argument("--refresh", action="store_true", help="強制重新生成（會跑數十秒）")
+    briefing.add_argument("--report-date", help="報告日 YYYY-MM-DD，預設今天（台北時區）")
+    briefing.add_argument("--date", help="依據的交易日，省略取最新")
+    briefing.add_argument("--json", action="store_true", help="輸出 JSON")
+
+    wl = sub.add_parser("watchlist", help="自選股清單")
+    wl.add_argument("action", nargs="?", choices=["list", "add", "remove", "clear"],
+                    help="省略等同 list")
+    wl.add_argument("keys", nargs="*", help="股票代號或公司名稱（add / remove 用）")
+    wl.add_argument("--date", help="交易日 YYYY-MM-DD，省略取最新")
+    wl.add_argument("--json", action="store_true", help="輸出 JSON")
 
     market = sub.add_parser("market", help="大盤指數（JSON）")
     market.add_argument("--date", help="交易日 YYYY-MM-DD，省略取最新")
@@ -203,6 +270,15 @@ def main() -> int:
         ok, message = verify_tool_calling()
         print(("通過：" if ok else "失敗：") + message)
         return 0 if ok else 1
+
+    if args.command == "briefing":
+        return _run_briefing(args)
+
+    if args.command == "watchlist":
+        if args.action in {"add", "remove"} and not args.keys:
+            print(f"{args.action} 需要至少一個股票代號或公司名稱", file=sys.stderr)
+            return 2
+        return _run_watchlist(args)
 
     if args.command == "scan":
         return _run_scan(args)

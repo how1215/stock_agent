@@ -12,7 +12,8 @@ from langchain_core.tools import tool
 
 from config import MAX_SCAN_LIMIT
 
-from . import query, render
+from . import query, render, watchlist
+from .briefing import get_briefing as get_briefing_report
 from .scan import run_scan
 from .sources.cache import DataUnavailable
 
@@ -147,4 +148,51 @@ def scan_market(
     return report
 
 
-ALL_TOOLS = [get_market_index, get_stock_quote, screen_stocks, scan_market]
+@tool
+def get_briefing(refresh: bool = False) -> str:
+    """讀取今天的盤前提要，內容包含大盤、市場寬度、自選股逐檔判讀與市場焦點。
+
+    用於「今天盤前提要」、「今天要注意什麼」、「幫我看一下盤前」這類問題。
+    報告通常已由每日排程生成好，這個工具讀取它。
+
+    Args:
+        refresh: True 則重新生成。**很慢（約 80 秒）**，只在使用者明確要求
+            重新產生、或報告不存在時才用 True。
+    """
+    try:
+        result = get_briefing_report(refresh=refresh)
+    except (DataUnavailable, ValueError) as exc:
+        return f"取不到盤前提要：{exc}"
+
+    prefix = {
+        "cache": "",
+        "generated": "（本次重新生成）\n",
+        "skipped": f"（{result.get('skipped', '沒有新交易日資料')}）\n",
+    }[result["source"]]
+    return prefix + result["text"]
+
+
+@tool
+def get_watchlist() -> str:
+    """讀取使用者的自選股清單，附上各檔最新收盤數據。
+
+    用於「我的自選股有哪些」、「我關注的股票今天怎樣」這類問題。
+    這是使用者自己維護的清單，不要和全市場篩選混為一談。
+
+    新增或移除自選股請告知使用者用 CLI 的 `watchlist add` / `watchlist remove`，
+    這個工具只能讀。
+    """
+    try:
+        return watchlist.describe()["text"]
+    except DataUnavailable as exc:
+        return f"查不到資料：{exc}"
+
+
+ALL_TOOLS = [
+    get_market_index,
+    get_stock_quote,
+    screen_stocks,
+    scan_market,
+    get_briefing,
+    get_watchlist,
+]

@@ -228,4 +228,69 @@ export default function (pi: ExtensionAPI) {
       return toResult(await runCli(args, signal));
     },
   });
+
+  pi.registerTool({
+    name: "stock_briefing",
+    label: "台股盤前提要",
+    description:
+      "讀取今天的台股盤前提要：大盤、市場寬度（漲跌家數）、自選股逐檔判讀、市場焦點。報告通常已由每日排程生成好，讀取是即時的。",
+    promptSnippet: "讀今天的台股盤前提要",
+    promptGuidelines: [
+      "「今天要注意什麼」、「盤前看一下」這類問題用這個工具。",
+      "refresh 要跑約 80 秒，只在使用者明確要求重新產生時才設 true。",
+      "報告日與依據的交易日不同（盤前報告依據前一交易日），轉述時要照報告內文的日期講。",
+    ],
+    parameters: Type.Object({
+      refresh: Type.Optional(
+        Type.Boolean({ description: "強制重新生成，約需 80 秒。預設讀既有報告" }),
+      ),
+      reportDate: Type.Optional(
+        Type.String({ description: "報告日 YYYY-MM-DD，預設今天（台北時區）" }),
+      ),
+    }),
+    async execute(_id, params, signal, onUpdate) {
+      if (params.refresh) {
+        onUpdate?.({
+          content: [{ type: "text", text: "正在重新生成盤前提要（約需 80 秒）…" }],
+        });
+      }
+      const args = [
+        "briefing",
+        "--json",
+        ...(params.refresh ? ["--refresh"] : []),
+        ...flag("--report-date", params.reportDate),
+      ];
+      return toResult(await runCli(args, signal));
+    },
+  });
+
+  pi.registerTool({
+    name: "stock_watchlist",
+    label: "台股自選股",
+    description:
+      "查看或修改使用者的自選股清單。清單會影響每日盤前提要裡逐檔判讀的範圍。",
+    promptSnippet: "查看或修改台股自選股清單",
+    promptGuidelines: [
+      "「我的自選股」、「我關注的股票」用 action=list，不要用 stock_screen 去猜。",
+      "add 與 remove 接受股票代號或公司名稱。",
+      "沒有清空整份清單的功能——使用者要清空時請他用 CLI 的 `watchlist clear`。",
+    ],
+    parameters: Type.Object({
+      action: StringEnum(["list", "add", "remove"] as const, {
+        description: "list 查看；add 加入；remove 移除",
+      }),
+      codes: Type.Optional(
+        Type.Array(Type.String(), {
+          description: 'add / remove 的對象，代號或公司名稱，例如 ["2330", "鴻海"]',
+        }),
+      ),
+    }),
+    async execute(_id, params, signal) {
+      if (params.action !== "list" && !params.codes?.length) {
+        throw new Error(`${params.action} 需要至少一個股票代號或公司名稱`);
+      }
+      const args = ["watchlist", params.action, ...(params.codes ?? []), "--json"];
+      return toResult(await runCli(args, signal));
+    },
+  });
 }

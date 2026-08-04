@@ -66,3 +66,14 @@
   question: 今天成交量最大的 5 檔是哪些？
   expect_tools: [screen_stocks]
   forbid_tools: [scan_market]
+
+# 盤前提要與自選股是使用者專屬的東西，不能用全市場篩選代替
+- name: 盤前提要走專用工具
+  question: 今天盤前提要
+  expect_tools: [get_briefing]
+  forbid_tools: [scan_market]
+
+- name: 自選股不能用全市場篩選代替
+  question: 我的自選股有哪些？
+  expect_tools: [get_watchlist]
+  forbid_tools: [screen_stocks, scan_market]

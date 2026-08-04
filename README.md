@@ -1,8 +1,10 @@
 # Taiwan Stock Market Agent
 
-A natural-language query agent for Taiwan Stock Exchange (TWSE) market data, built as a **LangGraph ReAct agent** running against a **locally-hosted LLM via vLLM**. Ask questions in plain language; the agent decides which tools to call, and every number in the answer traces back to a deterministic Python computation.
+A pre-market assistant for Taiwan Stock Exchange (TWSE) data, built as a **LangGraph agent system** running against a **locally-hosted LLM via vLLM**. It does two things: answers ad-hoc questions in natural language, and generates a scheduled daily briefing over a personal watchlist. Every number in every answer traces back to a deterministic Python computation.
 
 The application owns the agent loop — its own tools, state, checkpointing, tracing, and evaluation harness — rather than delegating it to an off-the-shelf coding harness. [The reasoning behind that choice is documented.](docs/DECISIONS.md#1-the-application-owns-the-agent-loop-not-a-coding-harness)
+
+Three LangGraph shapes are used, each because a simpler construct wouldn't do the job: a **prebuilt ReAct loop** for question answering, a **dynamic `Send` fan-out** for per-stock judgement across a screened candidate set, and a **static parallel join** for the daily briefing that composes the fan-out graph as a subgraph.
 
 ```
 $ uv run python -m stock_agent.cli ask "台積電和鴻海今天收多少？" --trace
@@ -26,6 +28,7 @@ Note what the model did here: it passed *company names* rather than guessing tic
 - [Architecture](#architecture)
 - [Design highlights](#design-highlights)
 - [Quickstart](#quickstart)
+- [Daily pre-market briefing](#daily-pre-market-briefing)
 - [Optional: Pi extension](#optional-pi-extension)
 - [Data source and its limitations](#data-source-and-its-limitations)
 - [Testing and evaluation](#testing-and-evaluation)
@@ -49,22 +52,28 @@ Note what the model did here: it passed *company names* rather than guessing tic
                            │ model selects tools
                            ▼
         ┌──────────────────────────────────────┐
-        │  tools.py    4 tools, LLM-facing     │
+        │  tools.py    6 tools, LLM-facing     │
         └────────┬─────────────────────┬───────┘
-                 │                     │ scan_market
+                 │                     │ scan_market / get_briefing
                  │                     ▼
-                 │     ┌──────────────────────────────────┐
-                 │     │  workflow/  custom StateGraph    │
-                 │     │  Send fan-out → per-stock LLM    │
-                 │     │  → reducer fan-in → summarise    │
-                 │     └──────────────────┬───────────────┘
-                 ▼                        │
+                 │   ┌────────────────────────────────────────┐
+                 │   │  workflow/                             │
+                 │   │                                        │
+                 │   │  briefing graph  (static parallel join) │
+                 │   │    snapshot ─┐                          │
+                 │   │    watchlist ─┼─► compose ─► persist    │
+                 │   │    movers ───┘      │                   │
+                 │   │        └─ composes ─┘                   │
+                 │   │  scan graph  (dynamic Send fan-out)     │
+                 │   │    select ─► [Send × N] ─► aggregate    │
+                 │   └──────────────────┬─────────────────────┘
+                 ▼                      │
         ┌──────────────────────────────────────┐
         │  query.py    structured results      │──► JSON CLI ──► Pi extension
         └──────────┬───────────────┬───────────┘                 (optional)
                    ▼               ▼
-            screen.py         render.py
-         (filter / sort)   (number formatting)
+            screen.py         render.py         watchlist.py
+      (filter/sort/breadth)  (formatting)     (personal list)
                    │
                    ▼
         ┌──────────────────────────────────────┐
@@ -72,7 +81,10 @@ Note what the model did here: it passed *company names* rather than guessing tic
         └──────────────────────────────────────┘
 ```
 
-Three of the four tools are simple lookups. The fourth, `scan_market`, mounts a **hand-written `StateGraph`** that fans out one LLM call per candidate stock and reduces the results — a shape the prebuilt ReAct loop structurally cannot express. [Why it earns its place, with measurements.](docs/DECISIONS.md#11-a-hand-written-stategraph-for-per-stock-fan-out)
+Four of the six tools are simple lookups. Two mount hand-written graphs:
+
+- **`scan_market`** fans out one LLM call per candidate stock via `Send` and reduces the results — a shape the prebuilt ReAct loop structurally cannot express. [Why it earns its place, with measurements.](docs/DECISIONS.md#11-a-hand-written-stategraph-for-per-stock-fan-out)
+- **`get_briefing`** runs three independent branches in parallel and joins them, composing the scan graph as a **subgraph** to read the watchlist. [Details.](docs/ARCHITECTURE.md#the-briefing-graph-static-parallelism-and-subgraph-composition)
 
 Two properties matter more than the box diagram:
 
@@ -92,6 +104,7 @@ Full data flow and layer responsibilities: [docs/ARCHITECTURE.md](docs/ARCHITECT
 | **Honest failure over plausible answers** | The upstream endpoint serves only the latest trading day. A request for a date not in the local cache returns an explicit error instead of silently substituting today's numbers — a wrong-date answer is worse than a refusal. |
 | **Fail-loud dependency check** | vLLM silently ignores tool definitions unless launched with the right flags; `bind_tools` does *not* raise. `cli verify` turns that into an explicit pass/fail. |
 | **Fan-out with failure isolation** | The scan graph runs one LLM call per stock in parallel. A single branch that errors or returns unparseable output is recorded as a failure and the rest of the batch completes — no truncation, no cross-contamination between stocks. Measured 1.85× faster than serial on a compute-bound local model. |
+| **Scheduled work stays out of the hot path** | The daily briefing takes ~80 s to generate and runs at 08:30 via launchd. Interactive reads hit the saved file in 0 ms. Re-runs on days with no new trading data detect that and leave the existing report untouched. |
 
 Trade-offs and rejected alternatives: [docs/DECISIONS.md](docs/DECISIONS.md).
 
@@ -137,6 +150,8 @@ Configuration is via `.env` (see `.env.example`):
 | `VLLM_MODEL` | `local-llm` | Served model name |
 | `CACHE_DIR` | `./data` | Trading-day cache |
 | `TRACE_DIR` | `./traces` | Execution traces |
+| `REPORTS_DIR` | `./reports` | Generated briefings |
+| `WATCHLIST_PATH` | `./data/watchlist.json` | Personal watchlist |
 
 ### Data-only mode (no LLM)
 
@@ -146,21 +161,67 @@ The same CLI exposes the data layer as JSON. Useful for scripting, and it is wha
 uv run python -m stock_agent.cli market
 uv run python -m stock_agent.cli quote 2330 鴻海
 uv run python -m stock_agent.cli screen --sort-by volume --limit 10
+uv run python -m stock_agent.cli watchlist                    # list / add / remove / clear
 ```
 
 Contract: **stdout is JSON only**, logs go to stderr, and failures exit non-zero with `{"error": "..."}` on stdout. Every payload carries `trade_date` and a pre-rendered `text` field. The contract is covered by tests, not just documented.
 
+## Daily pre-market briefing
+
+A scheduled job generates a briefing before market open, so it is already on disk when you sit down. It covers the index, market breadth, a per-stock reading of your watchlist, and market-wide movers.
+
+```bash
+uv run python -m stock_agent.cli watchlist add 2330 聯發科 3231   # codes or company names
+uv run python -m stock_agent.cli briefing                        # reads today's saved report
+uv run python -m stock_agent.cli briefing --refresh               # regenerate (~80s)
+
+./scripts/install-launchd.sh install    # weekdays 08:30 via launchd
+./scripts/install-launchd.sh run        # trigger once, for testing
+```
+
+Excerpt from a real run:
+
+```markdown
+# 盤前提要 2026-08-05（依據 2026-08-03 收盤）
+
+## 大盤
+發行量加權股價指數 43,386.41（266.66 點，+0.62%）
+上漲 651 家、下跌 354 家、平盤 78 家（共 1083 檔普通股）
+漲停 53 檔、跌停 0 檔
+
+## 自選股（4 檔）
+_判斷軸：昨日收盤是否呈現買盤佔優：收紅、收盤位置偏高、且沒有明顯的開高走低_
+
+・ 2317 鴻海｜符合｜收盤漲幅+1.00%收紅，收盤位置91偏高，開盤244.50後一路走高。
+・ 2330 台積電｜不符合｜漲跌幅-2.27%收黑，且收盤位置17偏低。
+・ 2454 聯發科｜符合｜收紅且收盤位置100為最高位，開盤即最高無開高走低現象。
+```
+
+Four details in there are load-bearing:
+
+**Two different dates.** The filename and title use the **report date** (today); the body states the **trading date** it is based on (the previous close). Pre-market means yesterday's data — conflating the two would misrepresent when the numbers are from. The header is written deterministically, never by the model.
+
+**The judgement axis is printed.** `符合` is meaningless unless you know what was judged. An early version asked "is this worth watching today" — every stock came back `符合`, because a weak stock is also worth watching. The axis was narrowed to buying-pressure so that `不符合` (as 台積電 above) carries information.
+
+**Reads from disk by default.** Generation takes ~80 s; waiting for that on every question would make the assistant unusable. `--refresh` is opt-in, and the scheduled job is what normally produces the file.
+
+**Weekend and holiday runs don't overwrite.** If the newest available trading day matches what the existing report was already based on, the run reports `skipped` and leaves the file alone — verified at 0.6 s versus 80 s for a real generation.
+
+The scheduled job also solves history accumulation: the endpoint only ever serves the latest trading day, so running daily is the only way `data/` grows. That is the prerequisite for moving-average and volume-trend work.
+
 ## Optional: Pi extension
 
-[Pi](https://github.com/earendil-works/pi) is a terminal agent harness. `.pi/extensions/tw-stock.ts` registers three typed tools (`stock_market`, `stock_quote`, `stock_screen`) that shell out to the JSON CLI above, so the market data is queryable from a Pi session.
+[Pi](https://github.com/earendil-works/pi) is a terminal agent harness. `.pi/extensions/tw-stock.ts` registers six typed tools (`stock_briefing`, `stock_watchlist`, `stock_market`, `stock_quote`, `stock_screen`, `stock_scan`) that shell out to the JSON CLI above, so the assistant is usable from a Pi session.
 
 ```bash
 pi -e .pi/extensions/tw-stock.ts
 ```
 
-This is a **thin shell, not a dependency** — Pi owns no application logic and removing the extension changes nothing about the system. Pi has no MCP support by design, so a CLI-backed extension is the supported integration path.
+Pi is the intended day-to-day driver, but it is still a **thin shell, not a dependency** — it holds no application logic beyond argument marshalling, and removing the extension leaves the system fully usable through the CLI. Pi has no MCP support by design, so a CLI-backed extension is the supported integration path. [Why using it as the interface doesn't contradict the "own your agent loop" decision.](docs/DECISIONS.md#10-pi-as-the-day-to-day-interface-still-holding-no-logic)
 
 The extension deliberately does no number formatting of its own: it forwards the `text` field from the JSON payload. Reimplementing the formatting rules in TypeScript would guarantee eventual drift.
+
+One asymmetry is intentional: the extension can `add` and `remove` watchlist entries, but there is no `clear`. Wiping the whole list is destructive and a human is watching a Pi session, so add/remove is reasonable there — but the risk of a model doing it on a misread instruction isn't worth the convenience. `clear` lives in the CLI only, and the Python ReAct agent's watchlist tool is read-only for the same reason.
 
 > Status: the CLI contract the extension depends on is covered by tests, and the TypeScript passes a syntax check. End-to-end verification inside a live Pi session has not been run — `pi` was not installed in the development environment.
 
@@ -192,8 +253,8 @@ Each of these was verified against live responses, and each is a plausible way t
 ## Testing and evaluation
 
 ```bash
-uv run pytest                      # 109 tests, ~0.4s, no network, no LLM
-uv run python evals/run_evals.py   # 10 behavioural cases, requires vLLM
+uv run pytest                      # 154 tests, ~0.5s, no network, no LLM
+uv run python evals/run_evals.py   # 12 behavioural cases, requires vLLM
 ```
 
 The two layers answer different questions.
@@ -212,9 +273,9 @@ The scan graph is covered here too, with a fake model injected — `build_scan_g
   forbid_contains: ["{taiex_close}"]
 ```
 
-Two of the cases are a matched pair guarding tool *selection* cost — `scan_market` is an order of magnitude slower than `screen_stocks`, so one case asserts it is used for a descriptive condition and another asserts it is **not** used for a purely numeric one (`forbid_tools`).
+Several cases guard tool *selection* rather than output. `scan_market` is an order of magnitude slower than `screen_stocks`, so one case asserts it is used for a descriptive condition and another asserts it is **not** used for a purely numeric one. Likewise `forbid_tools: [screen_stocks]` on "what's in my watchlist?" — a market-wide screen cannot substitute for a user's personal list, and a model that reaches for it has misunderstood the question.
 
-This is regression testing for prompt and tool-description changes: swap the model or reword a description, run the suite, and see immediately whether behaviour degraded. Current state: 10/10 passing on `gemma-4-31B-it-qat-w4a16-ct`.
+This is regression testing for prompt and tool-description changes: swap the model or reword a description, run the suite, and see immediately whether behaviour degraded. Current state: 12/12 passing on `gemma-4-31B-it-qat-w4a16-ct`.
 
 ## Observability
 
@@ -238,28 +299,33 @@ stock_agent/
 ├── agent.py            ReAct agent assembly, tool-calling check
 ├── llm.py              vLLM client (separate module to avoid an import cycle)
 ├── prompts.py          system prompt (data limits, number discipline)
-├── tools.py            4 LLM-facing tools
+├── tools.py            6 LLM-facing tools
 ├── scan.py             scan entry point: limits, concurrency, graph reuse
-├── workflow/           hand-written StateGraph for per-stock fan-out
-│   ├── state.py        state with an accumulating reducer + Send payload type
-│   ├── nodes.py        deterministic nodes and LLM nodes, separated
-│   └── graph.py        assembly; llm injected for testability
+├── briefing.py         briefing entry point: cache / skip / regenerate decision
+├── watchlist.py        personal watchlist, validated against market data
+├── report.py           report file I/O + deterministic composition
+├── workflow/
+│   ├── state.py        ScanState (reducer + Send payload) and BriefingState
+│   ├── nodes.py        scan nodes; deterministic and LLM nodes separated
+│   ├── graph.py        scan graph — dynamic Send fan-out
+│   └── briefing.py     briefing graph — static parallel join + scan subgraph
 ├── query.py            structured results + pre-rendered text
-├── render.py           number formatting, shared by tools and CLI
-├── screen.py           filtering, sorting, single-day shape metrics
+├── render.py           number formatting, shared by tools / CLI / reports
+├── screen.py           filtering, sorting, breadth, single-day shape metrics
 ├── trace.py            JSONL callback handler
-├── cli.py              agent mode + scan mode + JSON data mode
+├── cli.py              agent mode + briefing/watchlist + JSON data mode
 └── sources/
     ├── twse.py         fetch and normalise
     ├── schema.py       normalised field definitions
     └── cache.py        trading-day file cache
 
-tests/                  109 tests, fixtures recorded from live API
+tests/                  154 tests, fixtures recorded from live API
 evals/                  behavioural regression cases + runner
+scripts/                launchd job + install helper
 .pi/                    optional Pi extension + agent instructions
 ```
 
-~2,400 lines of Python across implementation and tests; ~175 lines of TypeScript.
+~3,700 lines of Python across implementation and tests; ~300 lines of TypeScript; ~120 lines of shell.
 
 Dependencies are deliberately few: `langgraph`, `langchain-openai`, `langchain-core`, `httpx`, `python-dotenv`, `pyyaml`. Notably **no pandas** — 1,377 rows sort fine with `sorted()`, and the dependency only earns its place once rolling windows across multiple trading days are needed. ([Why](docs/DECISIONS.md#5-no-pandas))
 
@@ -271,9 +337,9 @@ Scoped out deliberately, with the reason in each case:
 - **Over-the-counter (TPEx)** — different field names, needs a normalisation layer extension.
 - **Institutional net buy/sell** (`fund/T86`) — the endpoint currently returns HTTP 302; path has changed.
 - **Fundamentals** — `BWIBBU_ALL` (P/E, P/B, yield) is verified working but is a different analytical axis.
-- **Technical indicators** (MA/RSI/MACD) and volume-trend patterns (量增/量縮) — these need multiple trading days of history, and the upstream endpoint only serves the latest day, so `data/` has to accumulate first. `scan_market` therefore judges single-day shape only.
+- **Technical indicators** (MA/RSI/MACD) and volume-trend patterns (量增/量縮) — these need multiple trading days of history. The scheduled briefing job now accumulates one day file per trading day, so this becomes possible after a couple of weeks of runs; until then both `scan_market` and the briefing judge single-day shape only.
 - **Scanning all 1,086 stocks** — `scan_market` is capped at 30 candidates. Going wider needs either a cheaper first-pass filter or a much faster model; at ~2.9 s/stock, 1,086 would take over an hour.
-- **Scheduled daily collection** — history currently accumulates only when a query happens to run. A cron/launchd job after market close would decouple accumulation from ad-hoc use, and is the prerequisite for the two items above.
+- **CI, linting, type checking** — the 154 tests are not run automatically anywhere, and there is no ruff or mypy configuration. Cheap to add and the most visible gap for anyone assessing the repo.
 
 ## Disclaimer
 
