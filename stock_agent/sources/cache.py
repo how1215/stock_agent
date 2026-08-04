@@ -8,6 +8,7 @@
 """
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,11 +37,19 @@ def _read(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+# 只有 YYYY-MM-DD.json 才是日檔。快取目錄裡還有 watchlist.json，早期版本無條件
+# glob *.json 會把它當成交易日 —— 而且它排序在日期之後，於是被當成「最新交易日」，
+# 讀進來沒有 fetched_at 就永遠判定過期，磁碟快取因此完全失效（每次呼叫都打網路）。
+_DAY_FILE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 def cached_dates() -> list[str]:
-    """本地已有的交易日，由舊到新。"""
+    """本地已有的交易日，由舊到新。非日期檔名一律忽略。"""
     if not config.CACHE_DIR.is_dir():
         return []
-    return sorted(p.stem for p in config.CACHE_DIR.glob("*.json"))
+    return sorted(
+        p.stem for p in config.CACHE_DIR.glob("*.json") if _DAY_FILE_PATTERN.match(p.stem)
+    )
 
 
 def _is_fresh(day: dict) -> bool:

@@ -104,7 +104,7 @@ Full data flow and layer responsibilities: [docs/ARCHITECTURE.md](docs/ARCHITECT
 | **Honest failure over plausible answers** | The upstream endpoint serves only the latest trading day. A request for a date not in the local cache returns an explicit error instead of silently substituting today's numbers — a wrong-date answer is worse than a refusal. |
 | **Fail-loud dependency check** | vLLM silently ignores tool definitions unless launched with the right flags; `bind_tools` does *not* raise. `cli verify` turns that into an explicit pass/fail. |
 | **Fan-out with failure isolation** | The scan graph runs one LLM call per stock in parallel. A single branch that errors or returns unparseable output is recorded as a failure and the rest of the batch completes — no truncation, no cross-contamination between stocks. Measured 1.85× faster than serial on a compute-bound local model. |
-| **Scheduled work stays out of the hot path** | The daily briefing takes ~80 s to generate and runs at 08:30 via launchd. Interactive reads hit the saved file in 0 ms. Re-runs on days with no new trading data detect that and leave the existing report untouched. |
+| **Expensive work stays out of the hot path** | The briefing takes ~80 s to generate; interactive reads hit the saved file in 0 ms. Re-runs on a day with no new trading data detect that and leave the existing report untouched, so `--refresh` is safe to invoke casually. Optional launchd scheduling moves the cost to 08:30 — with a [macOS caveat](docs/DECISIONS.md#13-scheduling-on-the-os-offered-but-not-default). |
 
 Trade-offs and rejected alternatives: [docs/DECISIONS.md](docs/DECISIONS.md).
 
@@ -168,16 +168,24 @@ Contract: **stdout is JSON only**, logs go to stderr, and failures exit non-zero
 
 ## Daily pre-market briefing
 
-A scheduled job generates a briefing before market open, so it is already on disk when you sit down. It covers the index, market breadth, a per-stock reading of your watchlist, and market-wide movers.
+The briefing covers the index, market breadth, a per-stock reading of your watchlist, and market-wide movers. Generate it once per trading day; subsequent reads come from disk.
 
 ```bash
 uv run python -m stock_agent.cli watchlist add 2330 聯發科 3231   # codes or company names
-uv run python -m stock_agent.cli briefing                        # reads today's saved report
-uv run python -m stock_agent.cli briefing --refresh               # regenerate (~80s)
+uv run python -m stock_agent.cli briefing --refresh               # generate (~80s)
+uv run python -m stock_agent.cli briefing                        # read today's saved report (instant)
+```
 
+Optionally schedule it for weekday mornings so it is already on disk when you sit down:
+
+```bash
 ./scripts/install-launchd.sh install    # weekdays 08:30 via launchd
 ./scripts/install-launchd.sh run        # trigger once, for testing
 ```
+
+**macOS caveat:** launchd cannot execute anything inside `~/Documents`, `~/Desktop`, or `~/Downloads` — those are TCC-protected, and while your Terminal is authorised, the launchd context is not. The job fails with `Operation not permitted`, visible only in the log. `install` detects this and refuses with instructions rather than registering a job that silently never works. Either keep the project outside those directories, or generate on demand.
+
+Generating on demand costs one thing worth knowing: **history only accumulates on days you actually use the assistant.** The upstream endpoint has no date parameter, so a trading day never fetched is lost permanently. Any query writes that day's file as a side effect, so regular use mostly covers it — but gaps are possible, and they are what stands between this project and moving-average work.
 
 Excerpt from a real run:
 
@@ -205,9 +213,7 @@ Four details in there are load-bearing:
 
 **Reads from disk by default.** Generation takes ~80 s; waiting for that on every question would make the assistant unusable. `--refresh` is opt-in, and the scheduled job is what normally produces the file.
 
-**Weekend and holiday runs don't overwrite.** If the newest available trading day matches what the existing report was already based on, the run reports `skipped` and leaves the file alone — verified at 0.6 s versus 80 s for a real generation.
-
-The scheduled job also solves history accumulation: the endpoint only ever serves the latest trading day, so running daily is the only way `data/` grows. That is the prerequisite for moving-average and volume-trend work.
+**Re-running on a day with no new data doesn't overwrite.** If the newest available trading day matches what the existing report was already based on, the run reports `skipped` and leaves the file alone — verified at 0.6 s versus 80 s for a real generation. This matters for weekend and holiday runs under a scheduler, and it also means `--refresh` is safe to invoke casually.
 
 ## Optional: Pi extension
 
@@ -220,6 +226,32 @@ pi -e .pi/extensions/tw-stock.ts
 Pi is the intended day-to-day driver, but it is still a **thin shell, not a dependency** — it holds no application logic beyond argument marshalling, and removing the extension leaves the system fully usable through the CLI. Pi has no MCP support by design, so a CLI-backed extension is the supported integration path. [Why using it as the interface doesn't contradict the "own your agent loop" decision.](docs/DECISIONS.md#10-pi-as-the-day-to-day-interface-still-holding-no-logic)
 
 The extension deliberately does no number formatting of its own: it forwards the `text` field from the JSON payload. Reimplementing the formatting rules in TypeScript would guarantee eventual drift.
+
+### The daily routine as a skill
+
+`.pi/skills/premarket/SKILL.md` packages the whole morning routine, so a trading day is one command:
+
+```
+/skill:premarket
+```
+
+It sequences existing tools — no new capability — and the ordering carries a reason the model would otherwise optimise away: **step 1 must call `stock_market` before reading the briefing.** A cached briefing read performs zero HTTP requests (measured) and therefore never writes that day's cache file. Since the upstream endpoint has no date parameter, a trading day not fetched is lost permanently, so the routine's first step is what keeps history growing.
+
+The rest of the skill is an output template and the reporting discipline: state the trading date rather than "today", state the judgement axis before quoting a `符合`/`不符合` verdict, quote numbers only from tool output, no investment advice.
+
+**How it's evaluated.** A skill is prose for a model, so the Python eval harness cannot drive it. What *is* automated (`tests/test_pi_assets.py`, 12 tests) is reference integrity, which catches a real class of silent failure:
+
+- every `stock_*` name in `SKILL.md` and `AGENTS.md` resolves to a tool the extension actually registers
+- every CLI subcommand the extension invokes exists in `cli.py`
+- every registered tool is documented in `AGENTS.md`
+- the skill states the step-1 constraint and warns about `refresh` cost
+- all three model-facing documents mention the trading-date distinction
+
+A skill telling the model to call `stock_levels` would fail silently at runtime — the model just picks a different tool. These tests were mutation-checked: injecting a bad tool name makes them fail.
+
+What still needs a live Pi session: whether the model follows the ordering, and whether its condensed output is actually useful. That is a manual checklist, not a suite — and it is the honest cost of putting a routine in a harness rather than in code.
+
+### Other notes
 
 One asymmetry is intentional: the extension can `add` and `remove` watchlist entries, but there is no `clear`. Wiping the whole list is destructive and a human is watching a Pi session, so add/remove is reasonable there — but the risk of a model doing it on a misread instruction isn't worth the convenience. `clear` lives in the CLI only, and the Python ReAct agent's watchlist tool is read-only for the same reason.
 
@@ -237,7 +269,7 @@ No API key required. Measured: one request, 318 KB, 0.15 s, 1,377 rows (1,086 of
 Three limitations shape the entire design:
 
 1. **Listed (上市) only** — over-the-counter (上櫃/TPEx) is a separate API and is out of scope. The agent says so when asked.
-2. **End-of-day data, not real-time quotes.** Calling during market hours returns the **previous** trading day. The agent therefore always states the actual trading date rather than saying "today".
+2. **End-of-day data, with a publication lag longer than you'd expect.** The endpoint returns the **previous** trading day for most of the day — observed still serving 8/3 at 20:50 on Tuesday 8/4, over seven hours after the 13:30 close. Today's close appears later, in practice by the next morning. The agent therefore always states the actual trading date rather than saying "today", and a question like "what did the index close at today?" correctly answers with the previous session.
 3. **The endpoints accept no date parameter.** They always return the latest trading day — the Swagger spec declares no query parameters, and passing `?date=` is ignored (verified). Historical data can only accumulate through daily fetches into the local cache; a date that isn't cached returns an error rather than a substituted answer.
 
 ### Data-handling details worth knowing

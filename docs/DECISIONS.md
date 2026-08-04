@@ -177,7 +177,7 @@ Decisions where a reasonable alternative existed, what was chosen, and what it c
 
 **Context.** Building a market-watching assistant naturally suggests live quotes. Three readings of "analyse the opening data" were on the table: pre-market homework from the previous close, a snapshot shortly after the open, or continuous intraday monitoring.
 
-**Constraint.** The TWSE open API serves end-of-day data only — during market hours it returns the *previous* trading day, and `OpeningPrice` is that day's open. Intraday means a second data source: `mis.twse.com.tw/stock/api/getStockInfo.jsp`, which works (verified) but is undocumented, needs a `Referer` header, uses abbreviated field names (`o`/`h`/`l`/`z`/`tv`), has no SLA, and would require a second parser and field mapping.
+**Constraint.** The TWSE open API serves end-of-day data only, and the publication lag is longer than "after the close" suggests: measured at 20:50 on a Tuesday, over seven hours past the 13:30 close, it was still serving the previous Monday. Today's session appears by the following morning. `OpeningPrice` is likewise the previous day's open. Intraday means a second data source: `mis.twse.com.tw/stock/api/getStockInfo.jsp`, which works (verified) but is undocumented, needs a `Referer` header, uses abbreviated field names (`o`/`h`/`l`/`z`/`tv`), has no SLA, and would require a second parser and field mapping.
 
 **Decision.** Pre-market only. The briefing runs at 08:30 on the previous close.
 
@@ -187,13 +187,28 @@ Decisions where a reasonable alternative existed, what was chosen, and what it c
 
 ---
 
-### 13. Scheduling on the OS, not in the agent
+### 13. Scheduling on the OS, offered but not default
 
-**Context.** The briefing needs to run every trading day before the open.
+**Context.** The briefing was originally meant to run every trading day before the open.
 
 **Decision.** macOS `launchd`, weekdays 08:30, via `scripts/install-launchd.sh` and a wrapper script. No scheduler inside the application.
 
 **Rationale.** Neither Pi nor the Python agent has a scheduler, and adding one would mean a long-lived process to keep alive. launchd already solves "run this at a time, log the output, survive reboots". The wrapper exists because launchd provides almost no environment — `uv` has to be located explicitly rather than assumed on `PATH`.
+
+**What actually happened.** The job registered fine and then failed on every run:
+
+```
+shell-init: error retrieving current directory: getcwd: cannot access parent directories: Operation not permitted
+/bin/bash: .../scripts/briefing.sh: Operation not permitted
+```
+
+This is macOS TCC. `~/Documents`, `~/Desktop`, and `~/Downloads` are protected; an interactive Terminal has been granted access, but the process launchd execs has not. The script was `-rwxr-xr-x`, ran fine from a shell, and had no quarantine attribute — the only difference was who was executing it.
+
+The available fixes are both unattractive. Granting Full Disk Access to `/bin/bash` gives every shell script on the machine full disk access. Moving the project out of `~/Documents` works cleanly but is a change to someone's directory layout that a repo has no business demanding.
+
+**Revised decision.** Scheduling is optional, and on-demand generation is the documented default. `install` now detects a TCC-protected path and refuses with an explanation instead of registering a job whose failures are only visible in a log file. A silently-broken scheduled job is worse than no scheduled job.
+
+**Consequence, and it is a real one.** History now accumulates only on days the assistant is actually used. Any query writes that trading day's cache file as a side effect, so regular use largely covers it — but a missed day cannot be backfilled, because the endpoint has no date parameter (§6). That is precisely what stands between this project and moving averages or volume-trend judgements.
 
 **Two behaviours that mattered more than the scheduling itself:**
 
@@ -201,9 +216,7 @@ Decisions where a reasonable alternative existed, what was chosen, and what it c
 
 *Incoherent dates are rejected.* An early version accepted `--report-date 2020-01-02` and cheerfully wrote "盤前提要 2020-01-02（依據 2026-08-03 收盤）" — a file whose two dates contradict each other but which looks entirely normal. A pre-market report must be based on data from *before* its own date, so a trading date later than the report date now raises.
 
-**Consequence.** macOS-specific. A Linux deployment would need a cron entry or systemd timer; the wrapper script is portable, the plist is not.
-
-**Side effect that matters more than the feature.** Running daily is the only way `data/` accumulates — the endpoint has no date parameter, so a day not fetched is lost permanently. The scheduled job is therefore the prerequisite for moving averages, volume ratios, and anything else needing history.
+**Portability note.** The plist is macOS-specific; a Linux deployment would need a cron entry or systemd timer. The wrapper script is portable, and Linux has no TCC equivalent, so the protected-directory problem doesn't arise there.
 
 ---
 
@@ -233,7 +246,23 @@ Decisions where a reasonable alternative existed, what was chosen, and what it c
 
 ---
 
-### 16. Three corrections worth recording
+### 16. The daily routine lives in a skill, and what that costs
+
+**Context.** The morning routine is: make sure today's data is fetched, read the briefing, condense it into what to watch. Three steps, run once per trading day.
+
+**Decision.** A Pi skill (`.pi/skills/premarket/SKILL.md`) that sequences existing tools. No new capability, no new code path.
+
+**What makes it more than ceremony.** A skill that just wraps "call one tool and repeat the answer" would be pure overhead — the tool description already covers that. This one encodes an ordering the model would otherwise optimise away: reading a cached briefing performs **zero HTTP requests** (measured) and so never writes that day's cache file. Because the endpoint has no date parameter (§6), a trading day not fetched is lost permanently. Step 1 exists solely to keep history accumulating, and a model reasoning about efficiency would skip it. Prose is the right place for a constraint like that; a tool description can't express "call this other tool first, for a reason unrelated to your immediate goal".
+
+**What it costs.** A skill is prose interpreted by a model, so the eval harness — which drives the Python agent — cannot exercise it. This is §1's argument arriving from the other direction: choosing a harness as the interface means giving up mechanical verification of what happens there.
+
+**What was salvaged.** Reference integrity is checkable without a model, and it catches a genuinely silent failure mode: a skill instructing the model to call a tool that doesn't exist produces no error, the model simply substitutes another. `tests/test_pi_assets.py` cross-checks tool names in `SKILL.md` and `AGENTS.md` against the extension's registrations, CLI subcommands the extension invokes against `cli.py`'s parsers, and the presence of the step-1 constraint and the trading-date discipline in every model-facing document. The tests were mutation-checked by injecting a bad tool name.
+
+**What remains manual.** Whether the model actually follows the ordering, and whether its condensed output beats reading the raw report. No amount of static checking reaches that.
+
+---
+
+### 17. Three corrections worth recording
 
 **Verdict labels that are substrings of each other.** `read_one` asks the model for `符合` / `部分符合` / `不符合`. When the model ignores the delimited format, the fallback searches the raw text for a label — and the original implementation iterated the tuple in declaration order. `符合` is a substring of *both* other labels, so `"我認為不符合這個條件"` was classified as **符合**: the exact opposite conclusion, reported confidently. Found on the first end-to-end run with a fake model, before any real model saw it. The fix is to match longest-first, and the regression test asserts all three labels resolve correctly from unformatted text.
 

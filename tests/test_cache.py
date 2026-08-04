@@ -105,3 +105,35 @@ def test_cached_dates_sorted(temp_cache_dir):
     for date in ["2026-08-03", "2026-07-31", "2026-08-01"]:
         _write_day(temp_cache_dir, date, 0)
     assert cache.cached_dates() == ["2026-07-31", "2026-08-01", "2026-08-03"]
+
+
+class TestIgnoresNonDayFiles:
+    """迴歸測試：watchlist.json 也住在快取目錄裡。
+
+    早期版本無條件 glob *.json，於是 'watchlist' 被當成交易日 —— 而且它排序在
+    日期之後，被當成「最新交易日」讀進來，沒有 fetched_at 就永遠判定過期，
+    磁碟快取完全失效（每次呼叫都打網路）。
+    """
+
+    def test_watchlist_not_listed_as_a_trading_day(self, temp_cache_dir):
+        _write_day(temp_cache_dir, "2026-08-03", 0)
+        (temp_cache_dir / "watchlist.json").write_text(
+            json.dumps({"codes": ["2330"]}), encoding="utf-8"
+        )
+        assert cache.cached_dates() == ["2026-08-03"]
+
+    def test_disk_cache_still_hit_with_watchlist_present(self, temp_cache_dir, monkeypatch):
+        _write_day(temp_cache_dir, "2026-08-03", age_seconds=1)
+        (temp_cache_dir / "watchlist.json").write_text(
+            json.dumps({"codes": ["2330"]}), encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            cache.twse, "fetch_latest", lambda: pytest.fail("cache 新鮮時不該呼叫 API")
+        )
+        assert cache.load_or_fetch()["trade_date"] == "2026-08-03"
+
+    @pytest.mark.parametrize("name", ["watchlist", "notes", "2026-8-3", "backup.2026-08-03"])
+    def test_only_iso_dates_count(self, temp_cache_dir, name):
+        temp_cache_dir.mkdir(parents=True, exist_ok=True)
+        (temp_cache_dir / f"{name}.json").write_text("{}", encoding="utf-8")
+        assert cache.cached_dates() == []

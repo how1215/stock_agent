@@ -1,6 +1,11 @@
 # 台股數據查詢
 
-本專案的 `.pi/extensions/tw-stock.ts` 提供三個查台股數據的工具。
+本專案的 `.pi/extensions/tw-stock.ts` 提供六個查台股數據的工具，
+`.pi/skills/premarket/` 提供把它們串成每日例行的 skill。
+
+**每日例行用 `/skill:premarket`**（或使用者說「盤前」、「今天要注意什麼」時自動觸發）。
+它會依序同步資料、讀取盤前提要、按固定格式回報。單獨呼叫 `stock_briefing`
+不會觸發資料落地，所以例行的第一步不能跳。
 
 ## 工具怎麼選
 
