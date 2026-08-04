@@ -40,19 +40,6 @@ def quote_line(quote: dict) -> str:
     )
 
 
-def compact_line(quote: dict) -> str:
-    """一行摘要，只有掃一眼需要的欄位。
-
-    給市場焦點這種「誰在動」的清單用。完整的 quote_line 有開高低收前收量額，
-    一行約 130 字元；15 檔就佔掉報告六成篇幅（實測 1,717 / 2,799 字元），
-    而那些欄位對「誰在動」這個問題沒有貢獻。需要細節時再用 stock_quote 查那幾檔。
-    """
-    return (
-        f"{quote['code']} {quote['name']}｜收 {fmt_price(quote['close'])}"
-        f"｜{fmt_pct(quote['change_pct'])}｜額 {fmt_turnover(quote['turnover'])}"
-    )
-
-
 MISSING_CODE_HINT = (
     "上市普通股代號為 4 位數字、首碼 1–9（如 2330），ETF 以 0 開頭（如 0050）。"
     "也可以直接用公司全名查詢，例如「台積電」。"

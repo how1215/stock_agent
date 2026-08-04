@@ -92,22 +92,13 @@ def _watchlist_section(watchlist: dict) -> str:
 
 
 def _movers_section(movers: dict) -> str:
-    """市場焦點用精簡行。
-
-    這一段是「誰在動」的掃視清單。改用精簡行後這一段從 1,717 降到 613 字元、
-    整份報告從 2,799 降到 1,695 —— 而開高低收前收量這些欄位對「誰在動」沒有貢獻。
-    要細節就用 stock_quote 查那幾檔。
-
-    注意：這不是為了解決 Pi 的 context 壓縮。實測壓縮在不載入任何 extension
-    與 skill、只問一個字時照樣觸發，與報告大小無關。
-    """
     blocks = []
     for title, key in (("漲幅前段", "gainers"), ("跌幅前段", "losers"), ("成交金額前段", "turnover")):
         rows = movers.get(key, [])
         if not rows:
             continue
         blocks.append(f"**{title}**")
-        blocks.extend(f"  {render.compact_line(q)}" for q in rows)
+        blocks.extend(f"  {render.quote_line(q)}" for q in rows)
     return "\n".join(blocks) if blocks else "（無資料）"
 
 
