@@ -1,0 +1,57 @@
+# Agent 行為的回歸測試案例。
+#
+# expect_contains 裡的 {…} 佔位符會在執行時從資料層算出真值，所以資料每天更新
+# 也不會讓案例過期。可用的佔位符：
+#   {trade_date}        最新交易日
+#   {taiex_close}       加權指數收盤（含千分位）
+#   {close:2330}        個股收盤價
+#   {change_pct:2330}   個股漲跌幅（含正負號與 %）
+
+- name: 大盤查詢
+  question: 今天大盤收多少？
+  expect_tools: [get_market_index]
+  expect_contains: ["{trade_date}", "{taiex_close}"]
+
+- name: 兩檔個股應合併成一次呼叫
+  question: 台積電和鴻海今天收多少？
+  expect_tools: [get_stock_quote]
+  expect_tool_call_count: 1
+  expect_contains: ["{close:2330}", "{close:2317}", "{trade_date}"]
+
+- name: 漲幅排行
+  question: 今天漲幅前 10 名是哪些股票？
+  expect_tools: [screen_stocks]
+  expect_tool_args:
+    sort_by: change_pct
+    order: desc
+    limit: 10
+
+- name: 跌幅排行應用遞增排序
+  question: 今天跌最多的 5 檔股票是哪些？
+  expect_tools: [screen_stocks]
+  expect_tool_args:
+    sort_by: change_pct
+    order: asc
+
+- name: 成交量排行且排除 ETF
+  question: 今天成交量最大的 5 檔股票，不要 ETF
+  expect_tools: [screen_stocks]
+  expect_tool_args:
+    sort_by: volume
+    common_stock_only: true
+
+- name: 不存在的代號不得編造數字
+  question: 9999 這檔股票今天收多少？
+  expect_tools: [get_stock_quote]
+  expect_contains_any: ["查不到", "沒有", "找不到", "不存在"]
+  forbid_contains: ["{taiex_close}"]
+
+- name: 查不到的歷史日期要誠實說明
+  question: 2020-01-02 台積電收多少？
+  expect_contains_any: ["查不到", "沒有", "無法", "不提供", "只提供"]
+  forbid_contains: ["{close:2330}"]
+
+- name: 明確講出交易日而非含糊說今天
+  question: 台積電現在的股價？
+  expect_tools: [get_stock_quote]
+  expect_contains: ["{trade_date}"]

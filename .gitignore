@@ -1,0 +1,19 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# 執行時產生的資料
+.env
+data/
+traces/
+.pytest_cache/
+
+# 本地工具設定（不進版控）
+.claude/settings.local.json
