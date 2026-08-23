@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "A LangGraph agent for grounded Taiwan Stock Exchange analysis and daily briefings"
 readme = "README.md"
 requires-python = ">=3.13"
-license = "MIT"
 authors = [
     { name = "how1215" },
 ]
@@ -12,7 +11,6 @@ keywords = ["agent", "langgraph", "llm", "taiwan", "twse", "vllm"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
     "Topic :: Office/Business :: Financial",

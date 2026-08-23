@@ -2,7 +2,6 @@
 
 [![CI](https://github.com/how1215/stock_agent/actions/workflows/ci.yml/badge.svg)](https://github.com/how1215/stock_agent/actions/workflows/ci.yml)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A pre-market assistant for Taiwan Stock Exchange (TWSE) data, built as a **LangGraph agent system** running against a **locally-hosted LLM via vLLM**. It does two things: answers ad-hoc questions in natural language, and generates a scheduled daily briefing over a personal watchlist. Every number in every answer traces back to a deterministic Python computation.
 
@@ -41,7 +40,7 @@ Note what the model did here: it passed *company names* rather than guessing tic
 - [Observability](#observability)
 - [Project structure](#project-structure)
 - [Not implemented](#not-implemented)
-- [Contributing and licence](#contributing-and-licence)
+- [Contributing](#contributing)
 
 ---
 
@@ -393,11 +392,9 @@ Scoped out deliberately, with the reason in each case:
 - **Scanning all 1,086 stocks** — `scan_market` is capped at 30 candidates. Going wider needs either a cheaper first-pass filter or a much faster model; at ~2.9 s/stock, 1,086 would take over an hour.
 - **Static type checking** — runtime state is documented with `TypedDict`, but mypy or pyright is not yet enforced. Adding it will require tightening the dynamic dict payloads at the JSON and LangGraph boundaries.
 
-## Contributing and licence
+## Contributing
 
 Development setup, quality checks, and design constraints are documented in [CONTRIBUTING.md](CONTRIBUTING.md). Security issues should follow [SECURITY.md](SECURITY.md) rather than a public issue.
-
-Released under the [MIT License](LICENSE).
 
 ## Disclaimer
 
