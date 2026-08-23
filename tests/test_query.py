@@ -120,7 +120,11 @@ class TestCliJsonContract:
         assert "2020-01-02" in payload["error"]
 
     def test_every_payload_carries_trade_date_and_text(self, capsys):
-        for argv in (["market"], ["quote", "2330"], ["screen", "--sort-by", "volume", "--limit", "2"]):
+        for argv in (
+            ["market"],
+            ["quote", "2330"],
+            ["screen", "--sort-by", "volume", "--limit", "2"],
+        ):
             code, payload, _ = self._run(capsys, argv)
             assert code == 0
             assert payload["trade_date"] == "2026-08-03"

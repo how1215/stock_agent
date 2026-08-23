@@ -29,7 +29,7 @@ from uuid import uuid4
 
 from config import SCAN_MAX_CONCURRENCY
 
-from . import query, render, watchlist
+from . import query, watchlist
 from .agent import build_agent, verify_tool_calling
 from .briefing import get_briefing
 from .scan import run_scan, scan_payload
@@ -100,17 +100,19 @@ def _run_scan(args) -> int:
     """直接跑掃描 graph，不經 ReAct — 方便單獨驗證 graph 行為與量測延遲。"""
     if args.json:
         # Pi extension 等外部呼叫者走這條：契約與其他 JSON 子命令一致
-        return _emit_json(lambda: scan_payload(
-            args.focus,
-            sort_by=args.sort_by,
-            order=args.order,
-            limit=args.limit,
-            min_change_pct=args.min_change_pct,
-            min_volume=args.min_volume,
-            common_stock_only=not args.include_etf,
-            date=args.date,
-            max_concurrency=args.concurrency,
-        ))
+        return _emit_json(
+            lambda: scan_payload(
+                args.focus,
+                sort_by=args.sort_by,
+                order=args.order,
+                limit=args.limit,
+                min_change_pct=args.min_change_pct,
+                min_volume=args.min_volume,
+                common_stock_only=not args.include_etf,
+                date=args.date,
+                max_concurrency=args.concurrency,
+            )
+        )
 
     started = time.perf_counter()
     try:
@@ -143,15 +145,13 @@ def _run_scan(args) -> int:
 def _run_briefing(args) -> int:
     """盤前簡報。預設讀存檔 — 生成要幾十秒，每次現場等會讓助手不好用。"""
     if args.json:
-        return _emit_json(lambda: get_briefing(
-            report_date=args.report_date, date=args.date, refresh=args.refresh
-        ))
+        return _emit_json(
+            lambda: get_briefing(report_date=args.report_date, date=args.date, refresh=args.refresh)
+        )
 
     started = time.perf_counter()
     try:
-        result = get_briefing(
-            report_date=args.report_date, date=args.date, refresh=args.refresh
-        )
+        result = get_briefing(report_date=args.report_date, date=args.date, refresh=args.refresh)
     except (DataUnavailable, ValueError) as exc:
         print(f"簡報產生失敗：{exc}", file=sys.stderr)
         return 1
@@ -203,18 +203,24 @@ def main() -> int:
 
     scan = sub.add_parser("scan", help="逐檔判讀掃描（跑 StateGraph，不經 ReAct）")
     scan.add_argument("focus", help="要找什麼特徵，自然語言描述")
-    scan.add_argument("--sort-by", default="turnover",
-                      choices=["change_pct", "volume", "turnover", "close"])
+    scan.add_argument(
+        "--sort-by", default="turnover", choices=["change_pct", "volume", "turnover", "close"]
+    )
     scan.add_argument("--order", default="desc", choices=["desc", "asc"])
     scan.add_argument("--limit", type=int, default=15)
     scan.add_argument("--min-change-pct", type=float)
     scan.add_argument("--min-volume", type=int)
     scan.add_argument("--include-etf", action="store_true")
-    scan.add_argument("--concurrency", type=int, default=SCAN_MAX_CONCURRENCY,
-                      help=f"並行判讀數，預設 {SCAN_MAX_CONCURRENCY}")
+    scan.add_argument(
+        "--concurrency",
+        type=int,
+        default=SCAN_MAX_CONCURRENCY,
+        help=f"並行判讀數，預設 {SCAN_MAX_CONCURRENCY}",
+    )
     scan.add_argument("--date", help="交易日 YYYY-MM-DD，省略取最新")
-    scan.add_argument("--json", action="store_true",
-                      help="輸出 JSON（stdout 只有 JSON），供外部工具呼叫")
+    scan.add_argument(
+        "--json", action="store_true", help="輸出 JSON（stdout 只有 JSON），供外部工具呼叫"
+    )
 
     briefing = sub.add_parser("briefing", help="盤前簡報（預設讀存檔）")
     briefing.add_argument("--refresh", action="store_true", help="強制重新生成（會跑數十秒）")
@@ -223,8 +229,9 @@ def main() -> int:
     briefing.add_argument("--json", action="store_true", help="輸出 JSON")
 
     wl = sub.add_parser("watchlist", help="自選股清單")
-    wl.add_argument("action", nargs="?", choices=["list", "add", "remove", "clear"],
-                    help="省略等同 list")
+    wl.add_argument(
+        "action", nargs="?", choices=["list", "add", "remove", "clear"], help="省略等同 list"
+    )
     wl.add_argument("keys", nargs="*", help="股票代號或公司名稱（add / remove 用）")
     wl.add_argument("--date", help="交易日 YYYY-MM-DD，省略取最新")
     wl.add_argument("--json", action="store_true", help="輸出 JSON")
@@ -237,14 +244,16 @@ def main() -> int:
     quote.add_argument("--date", help="交易日 YYYY-MM-DD，省略取最新")
 
     screen = sub.add_parser("screen", help="篩選排序全市場個股（JSON）")
-    screen.add_argument("--sort-by", required=True,
-                        choices=["change_pct", "volume", "turnover", "close"])
+    screen.add_argument(
+        "--sort-by", required=True, choices=["change_pct", "volume", "turnover", "close"]
+    )
     screen.add_argument("--order", default="desc", choices=["desc", "asc"])
     screen.add_argument("--limit", type=int, default=20)
     screen.add_argument("--min-change-pct", type=float)
     screen.add_argument("--min-volume", type=int)
-    screen.add_argument("--include-etf", action="store_true",
-                        help="納入 ETF 與受益證券（預設只看普通股）")
+    screen.add_argument(
+        "--include-etf", action="store_true", help="納入 ETF 與受益證券（預設只看普通股）"
+    )
     screen.add_argument("--date", help="交易日 YYYY-MM-DD，省略取最新")
 
     args = parser.parse_args()
@@ -256,15 +265,17 @@ def main() -> int:
         return _emit_json(lambda: query.quote(args.keys, args.date))
 
     if args.command == "screen":
-        return _emit_json(lambda: query.screen(
-            sort_by=args.sort_by,
-            order=args.order,
-            limit=args.limit,
-            min_change_pct=args.min_change_pct,
-            min_volume=args.min_volume,
-            common_stock_only=not args.include_etf,
-            date=args.date,
-        ))
+        return _emit_json(
+            lambda: query.screen(
+                sort_by=args.sort_by,
+                order=args.order,
+                limit=args.limit,
+                min_change_pct=args.min_change_pct,
+                min_volume=args.min_volume,
+                common_stock_only=not args.include_etf,
+                date=args.date,
+            )
+        )
 
     if args.command == "verify":
         ok, message = verify_tool_calling()

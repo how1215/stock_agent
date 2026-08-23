@@ -93,7 +93,11 @@ def _watchlist_section(watchlist: dict) -> str:
 
 def _movers_section(movers: dict) -> str:
     blocks = []
-    for title, key in (("漲幅前段", "gainers"), ("跌幅前段", "losers"), ("成交金額前段", "turnover")):
+    for title, key in (
+        ("漲幅前段", "gainers"),
+        ("跌幅前段", "losers"),
+        ("成交金額前段", "turnover"),
+    ):
         rows = movers.get(key, [])
         if not rows:
             continue
@@ -113,22 +117,24 @@ def compose(
 ) -> str:
     """組出完整報告。標題與數字全部決定性產生，只有 observation 來自模型。"""
     watch_count = len(watchlist.get("codes", []))
-    return "\n".join([
-        f"# 盤前提要 {report_date}（依據 {trade_date} 收盤）",
-        "",
-        "## 大盤",
-        _market_section(index, breadth),
-        "",
-        f"## 自選股（{watch_count} 檔）",
-        _watchlist_section(watchlist),
-        "",
-        "## 市場焦點",
-        _movers_section(movers),
-        "",
-        "## 綜合觀察",
-        observation.strip() or "（未產生）",
-        "",
-        "---",
-        DISCLAIMER,
-        "",
-    ])
+    return "\n".join(
+        [
+            f"# 盤前提要 {report_date}（依據 {trade_date} 收盤）",
+            "",
+            "## 大盤",
+            _market_section(index, breadth),
+            "",
+            f"## 自選股（{watch_count} 檔）",
+            _watchlist_section(watchlist),
+            "",
+            "## 市場焦點",
+            _movers_section(movers),
+            "",
+            "## 綜合觀察",
+            observation.strip() or "（未產生）",
+            "",
+            "---",
+            DISCLAIMER,
+            "",
+        ]
+    )

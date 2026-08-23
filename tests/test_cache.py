@@ -37,9 +37,7 @@ class TestSpecificDate:
     def test_missing_date_raises_without_hitting_api(self, temp_cache_dir, monkeypatch):
         """指定日期查不到時絕不能打 API — 打了也只會拿到最新交易日的數字，
         回錯日期的數據比誠實報錯更糟。"""
-        monkeypatch.setattr(
-            cache.twse, "fetch_latest", lambda: pytest.fail("不該呼叫 API")
-        )
+        monkeypatch.setattr(cache.twse, "fetch_latest", lambda: pytest.fail("不該呼叫 API"))
         _write_day(temp_cache_dir, "2026-08-03", 0)
         with pytest.raises(cache.DataUnavailable) as exc:
             cache.load_or_fetch("2026-07-31")
@@ -47,9 +45,7 @@ class TestSpecificDate:
         assert "2026-08-03" in str(exc.value)  # 有提示本地已有哪些日期
 
     def test_error_message_when_cache_empty(self, monkeypatch):
-        monkeypatch.setattr(
-            cache.twse, "fetch_latest", lambda: pytest.fail("不該呼叫 API")
-        )
+        monkeypatch.setattr(cache.twse, "fetch_latest", lambda: pytest.fail("不該呼叫 API"))
         with pytest.raises(cache.DataUnavailable) as exc:
             cache.load_or_fetch("2026-07-31")
         assert "沒有任何日期" in str(exc.value)

@@ -36,9 +36,7 @@ def build_scan_graph(llm: BaseChatModel):
 
     graph.add_edge(START, "select_candidates")
     # fan_out 回傳 list[Send] 展開分支，或回傳 "no_candidates" 走短路
-    graph.add_conditional_edges(
-        "select_candidates", nodes.fan_out, ["read_one", "no_candidates"]
-    )
+    graph.add_conditional_edges("select_candidates", nodes.fan_out, ["read_one", "no_candidates"])
     graph.add_edge("read_one", "aggregate")
     graph.add_edge("aggregate", "summarise")
     graph.add_edge("summarise", END)

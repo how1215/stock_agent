@@ -19,7 +19,7 @@ How a question becomes an answer, what each layer is responsible for, and where 
 | Report | `report.py` | Report file I/O, deterministic composition | no |
 | Sources | `sources/` | Fetch, normalise, cache | no |
 
-Everything from `query.py` down is ordinary, testable Python — which is why the test suite runs in 0.4 s with no network and no model. The scan graph also tests without a model, because `build_scan_graph(llm)` takes it as a parameter rather than constructing it.
+Everything from `query.py` down is ordinary, testable Python — which is why the test suite typically runs in under a second with no network and no model. The scan graph also tests without a model, because `build_scan_graph(llm)` takes it as a parameter rather than constructing it.
 
 `llm.py` exists as its own module for a mundane reason worth stating: `agent.py` imports `tools.py` for the tool list, and `scan_market` inside `tools.py` needs a model. Putting `build_llm` in `agent.py` would make that a cycle.
 

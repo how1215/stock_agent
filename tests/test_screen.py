@@ -5,12 +5,21 @@ from stock_agent import screen
 
 
 class TestIsCommonStock:
-    @pytest.mark.parametrize("code,expected", [
-        ("1101", True), ("2330", True), ("9958", True),
-        # 首碼 0 的 4 位純數字是 ETF，不是普通股 — 只檢查「4 位數字」會誤判
-        ("0050", False), ("0056", False),
-        ("00400A", False), ("006201", False), ("233", False), ("23300", False),
-    ])
+    @pytest.mark.parametrize(
+        "code,expected",
+        [
+            ("1101", True),
+            ("2330", True),
+            ("9958", True),
+            # 首碼 0 的 4 位純數字是 ETF，不是普通股 — 只檢查「4 位數字」會誤判
+            ("0050", False),
+            ("0056", False),
+            ("00400A", False),
+            ("006201", False),
+            ("233", False),
+            ("23300", False),
+        ],
+    )
     def test_four_digits_and_leading_nonzero(self, code, expected):
         assert screen.is_common_stock(code) is expected
 

@@ -49,17 +49,20 @@ class TestBreadth:
             {"code": "4444", "change_pct": -10.0},
         ]
         b = screen.breadth(quotes)
-        assert b["limit_up"] == 2   # 10.00 與 9.95 都算漲停（容差）
+        assert b["limit_up"] == 2  # 10.00 與 9.95 都算漲停（容差）
         assert b["limit_down"] == 1
 
     def test_ignores_none_change_pct(self, day):
         b = screen.breadth(day["quotes"])
         halted = [q for q in day["quotes"] if q["code"] == "9299"]
         assert halted and halted[0]["change_pct"] is None
-        assert b["total"] == len([
-            q for q in day["quotes"]
-            if screen.is_common_stock(q["code"]) and q["change_pct"] is not None
-        ])
+        assert b["total"] == len(
+            [
+                q
+                for q in day["quotes"]
+                if screen.is_common_stock(q["code"]) and q["change_pct"] is not None
+            ]
+        )
 
 
 class TestGraphShape:
@@ -142,8 +145,14 @@ class TestReportModule:
             report_date="2026-08-04",
             trade_date="2026-08-03",
             index={"index_name": "加權", "close": 1.0, "change": 1.0, "change_pct": 1.0},
-            breadth={"total": 1, "advancing": 1, "declining": 0, "unchanged": 0,
-                     "limit_up": 0, "limit_down": 0},
+            breadth={
+                "total": 1,
+                "advancing": 1,
+                "declining": 0,
+                "unchanged": 0,
+                "limit_up": 0,
+                "limit_down": 0,
+            },
             watchlist={"codes": [], "readings": []},
             movers={},
             observation="x",
@@ -162,9 +171,7 @@ class TestReportModule:
 class TestGetBriefingCaching:
     def test_reads_cache_without_touching_graph(self, monkeypatch):
         report_mod.save("2026-08-04", "# 盤前提要 2026-08-04（依據 2026-08-03 收盤）\n內容")
-        monkeypatch.setattr(
-            briefing_mod, "_get_graph", lambda: pytest.fail("有存檔時不該跑 graph")
-        )
+        monkeypatch.setattr(briefing_mod, "_get_graph", lambda: pytest.fail("有存檔時不該跑 graph"))
         result = briefing_mod.get_briefing(report_date="2026-08-04")
         assert result["source"] == "cache"
         assert result["trade_date"] == "2026-08-03"
@@ -182,9 +189,7 @@ class TestGetBriefingCaching:
             briefing_mod.get_briefing(report_date="2020-01-02", refresh=True)
 
     def test_generates_when_absent(self, monkeypatch):
-        monkeypatch.setattr(
-            briefing_mod, "_graph", build_briefing_graph(_llm("符合|||x", "觀察"))
-        )
+        monkeypatch.setattr(briefing_mod, "_graph", build_briefing_graph(_llm("符合|||x", "觀察")))
         result = briefing_mod.get_briefing(report_date="2026-08-04")
         assert result["source"] == "generated"
         assert result["text"].startswith("# 盤前提要 2026-08-04")
@@ -201,9 +206,7 @@ class TestCliContract:
         return code, capsys.readouterr()
 
     def test_briefing_json_is_pure_json(self, capsys, monkeypatch):
-        monkeypatch.setattr(
-            briefing_mod, "_graph", build_briefing_graph(_llm("符合|||x", "觀察"))
-        )
+        monkeypatch.setattr(briefing_mod, "_graph", build_briefing_graph(_llm("符合|||x", "觀察")))
         code, captured = self._run(capsys, ["briefing", "--json", "--report-date", "2026-08-04"])
         payload = json.loads(captured.out)
         assert code == 0

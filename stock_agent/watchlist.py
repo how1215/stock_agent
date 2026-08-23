@@ -83,9 +83,7 @@ def add(keys: list[str], date: str | None = None) -> dict:
         if quote["code"] in codes:
             already.append({"code": quote["code"], "name": quote["name"]})
         elif len(codes) >= config.MAX_WATCHLIST_SIZE:
-            not_found.append(
-                f"{quote['code']}（清單已達上限 {config.MAX_WATCHLIST_SIZE} 檔）"
-            )
+            not_found.append(f"{quote['code']}（清單已達上限 {config.MAX_WATCHLIST_SIZE} 檔）")
         else:
             codes.append(quote["code"])
             added.append({"code": quote["code"], "name": quote["name"]})

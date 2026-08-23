@@ -11,10 +11,11 @@
 from langchain_core.language_models import BaseChatModel
 from langgraph.types import Send
 
-from .. import render, screen as screening
+from .. import render
+from .. import screen as screening
 from ..sources import cache
 from ..sources.schema import TAIEX_INDEX_NAME
-from .state import VERDICTS, ReadTask, Reading, ScanState
+from .state import VERDICTS, Reading, ReadTask, ScanState
 
 # read_one 的輸出格式。刻意不用 JSON — 小模型產生單行分隔字串比產生合法
 # JSON 可靠得多，而這裡只需要兩個欄位。
@@ -65,18 +66,20 @@ def _facts(quote: dict) -> str:
     position = metrics["close_position"]
     position_text = "—" if position is None else f"{position:.0f}"
 
-    return "\n".join([
-        f"- 代號名稱：{quote['code']} {quote['name']}",
-        f"- 收盤：{render.fmt_price(quote['close'])}（前收 {render.fmt_price(quote['prev_close'])}）",
-        f"- 漲跌幅：{render.fmt_pct(quote['change_pct'])}",
-        f"- 開盤：{render.fmt_price(quote['open'])}"
-        f"　最高：{render.fmt_price(quote['high'])}　最低：{render.fmt_price(quote['low'])}",
-        f"- 開盤跳空：{pct(metrics['gap_pct'])}",
-        f"- 振幅：{pct(metrics['amplitude_pct'])}",
-        f"- 收盤位置：{position_text}（0 表示收在當日最低，100 表示收在最高）",
-        f"- 成交量：{render.fmt_volume(quote['volume'])}",
-        f"- 成交金額：{render.fmt_turnover(quote['turnover'])}",
-    ])
+    return "\n".join(
+        [
+            f"- 代號名稱：{quote['code']} {quote['name']}",
+            f"- 收盤：{render.fmt_price(quote['close'])}（前收 {render.fmt_price(quote['prev_close'])}）",
+            f"- 漲跌幅：{render.fmt_pct(quote['change_pct'])}",
+            f"- 開盤：{render.fmt_price(quote['open'])}"
+            f"　最高：{render.fmt_price(quote['high'])}　最低：{render.fmt_price(quote['low'])}",
+            f"- 開盤跳空：{pct(metrics['gap_pct'])}",
+            f"- 振幅：{pct(metrics['amplitude_pct'])}",
+            f"- 收盤位置：{position_text}（0 表示收在當日最低，100 表示收在最高）",
+            f"- 成交量：{render.fmt_volume(quote['volume'])}",
+            f"- 成交金額：{render.fmt_turnover(quote['turnover'])}",
+        ]
+    )
 
 
 # --- 確定性節點 ---
@@ -121,11 +124,14 @@ def fan_out(state: ScanState) -> list[Send] | str:
     if not state["candidates"]:
         return "no_candidates"
     return [
-        Send("read_one", ReadTask(
-            focus=state["focus"],
-            trade_date=state["trade_date"],
-            quote=quote,
-        ))
+        Send(
+            "read_one",
+            ReadTask(
+                focus=state["focus"],
+                trade_date=state["trade_date"],
+                quote=quote,
+            ),
+        )
         for quote in state["candidates"]
     ]
 
@@ -187,10 +193,16 @@ def read_one(llm: BaseChatModel, task: ReadTask) -> dict:
         # 照原順序比會把「不符合」誤判成「符合」。
         matched = next((v for v in _VERDICTS_BY_SPECIFICITY if v in text), None)
         if matched is None:
-            return {"readings": [Reading(
-                **base, verdict="不符合", note="",
-                error=f"無法解析模型輸出：{text[:120]}",
-            )]}
+            return {
+                "readings": [
+                    Reading(
+                        **base,
+                        verdict="不符合",
+                        note="",
+                        error=f"無法解析模型輸出：{text[:120]}",
+                    )
+                ]
+            }
         verdict, note = matched, note or text
 
     return {"readings": [Reading(**base, verdict=verdict, note=note, error="")]}
@@ -202,9 +214,9 @@ def summarise(llm: BaseChatModel, state: ScanState) -> dict:
     matched = grouped.get("符合", [])
     partial = grouped.get("部分符合", [])
 
-    matched_lines = "\n".join(
-        f"- {r['code']} {r['name']}：{r['note']}" for r in matched
-    ) or "（無）"
+    matched_lines = (
+        "\n".join(f"- {r['code']} {r['name']}：{r['note']}" for r in matched) or "（無）"
+    )
 
     prompt = _SUMMARY_PROMPT.format(
         focus=state["focus"],
@@ -237,7 +249,9 @@ def summarise(llm: BaseChatModel, state: ScanState) -> dict:
         for reading in grouped.get(verdict, []):
             lines.append(f"  [{verdict}] {reading['code']} {reading['name']}：{reading['note']}")
     if state["failed"]:
-        lines.append(f"  判讀失敗 {len(state['failed'])} 檔："
-                     + "、".join(f"{r['code']} {r['name']}" for r in state["failed"]))
+        lines.append(
+            f"  判讀失敗 {len(state['failed'])} 檔："
+            + "、".join(f"{r['code']} {r['name']}" for r in state["failed"])
+        )
 
     return {"report": "\n".join(lines)}

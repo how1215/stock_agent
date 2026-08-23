@@ -1,9 +1,22 @@
 [project]
-name = "stock"
+name = "tw-stock-agent"
 version = "0.1.0"
-description = "台股數據查詢 agent — LangGraph ReAct agent over TWSE open data, backed by local vLLM"
+description = "A LangGraph agent for grounded Taiwan Stock Exchange analysis and daily briefings"
 readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
+authors = [
+    { name = "how1215" },
+]
+keywords = ["agent", "langgraph", "llm", "taiwan", "twse", "vllm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial",
+]
 dependencies = [
     "httpx>=0.28.1",
     "langchain-core>=1.5.3",
@@ -16,4 +29,21 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "ruff>=0.16.4",
 ]
+
+[project.urls]
+Documentation = "https://github.com/how1215/stock_agent#readme"
+Issues = "https://github.com/how1215/stock_agent/issues"
+Repository = "https://github.com/how1215/stock_agent"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

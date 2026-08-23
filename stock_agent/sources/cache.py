@@ -73,7 +73,9 @@ def load_or_fetch(trade_date: str | None = None) -> dict:
         path = _day_file(trade_date)
         if not path.is_file():
             available = cached_dates()
-            hint = f"本地已有：{', '.join(available)}" if available else "本地目前沒有任何日期的資料"
+            hint = (
+                f"本地已有：{', '.join(available)}" if available else "本地目前沒有任何日期的資料"
+            )
             raise DataUnavailable(
                 f"沒有 {trade_date} 的資料。TWSE 開放端點只提供最新交易日，"
                 f"歷史資料需靠每日抓取累積。{hint}"

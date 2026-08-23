@@ -5,6 +5,10 @@ build/
 dist/
 wheels/
 *.egg-info
+.coverage
+coverage.xml
+htmlcov/
+.ruff_cache/
 
 # Virtual environments
 .venv
@@ -16,6 +20,7 @@ traces/
 reports/
 logs/
 .pytest_cache/
+.DS_Store
 
 # 本地工具設定（不進版控）
 .claude/settings.local.json

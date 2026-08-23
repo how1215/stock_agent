@@ -73,9 +73,7 @@ class TestNormalizeIndex:
         assert down["change_pct"] < 0
 
     def test_taiex(self, raw_indices):
-        taiex = next(
-            twse.normalize_index(r) for r in raw_indices if r["指數"] == TAIEX_INDEX_NAME
-        )
+        taiex = next(twse.normalize_index(r) for r in raw_indices if r["指數"] == TAIEX_INDEX_NAME)
         assert taiex["close"] == 43386.41
         assert taiex["change"] == 266.66
         assert taiex["change_pct"] == 0.62

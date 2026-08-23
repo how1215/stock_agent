@@ -19,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from stock_agent import render  # noqa: E402
 from stock_agent.agent import build_agent, verify_tool_calling  # noqa: E402
-from stock_agent.screen import find_quotes  # noqa: E402
 from stock_agent.sources import cache  # noqa: E402
 from stock_agent.sources.schema import TAIEX_INDEX_NAME  # noqa: E402
 from stock_agent.trace import TraceHandler  # noqa: E402

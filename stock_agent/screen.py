@@ -123,7 +123,9 @@ def screen(
     if common_stock_only:
         rows = [q for q in rows if is_common_stock(q["code"])]
     if min_change_pct is not None:
-        rows = [q for q in rows if q["change_pct"] is not None and q["change_pct"] >= min_change_pct]
+        rows = [
+            q for q in rows if q["change_pct"] is not None and q["change_pct"] >= min_change_pct
+        ]
     if min_volume is not None:
         rows = [q for q in rows if q["volume"] is not None and q["volume"] >= min_volume]
 

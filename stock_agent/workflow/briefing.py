@@ -35,7 +35,10 @@ from langgraph.graph import END, START, StateGraph
 
 from config import BRIEFING_MOVERS_LIMIT, SCAN_MAX_CONCURRENCY
 
-from .. import render, report as report_mod, screen as screening, watchlist as watchlist_mod
+from .. import render
+from .. import report as report_mod
+from .. import screen as screening
+from .. import watchlist as watchlist_mod
 from ..sources import cache
 from ..sources.schema import TAIEX_INDEX_NAME
 from .graph import build_scan_graph
@@ -45,8 +48,7 @@ from .state import BriefingState
 # 結果每一檔都判「符合」（弱勢股當然也值得留意），verdict 完全沒有資訊量。
 # 改成問買盤強弱後，「不符合」本身就是有用訊息（= 昨日偏弱）。
 WATCHLIST_FOCUS = (
-    "昨日收盤是否呈現買盤佔優：收紅、收盤位置偏高（收在當日高位）、"
-    "且沒有明顯的開高走低"
+    "昨日收盤是否呈現買盤佔優：收紅、收盤位置偏高（收在當日高位）、且沒有明顯的開高走低"
 )
 
 _OBSERVATION_PROMPT = """你是台股盤前助理。根據以下**已經算好**的數據寫一段綜合觀察。
@@ -150,13 +152,17 @@ def compose_briefing(llm: BaseChatModel, state: BriefingState) -> dict:
     """唯一呼叫模型的節點。失敗時降級，不讓整份報告消失。"""
     index, breadth = state["market_index"], state["breadth"]
 
-    watchlist_lines = "\n".join(
-        f"- {r['code']} {r['name']}：{r['verdict']}｜{r['note'] or r['error']}"
-        for r in state["watchlist"].get("readings", [])
-    ) or "（自選股清單為空）"
+    watchlist_lines = (
+        "\n".join(
+            f"- {r['code']} {r['name']}：{r['verdict']}｜{r['note'] or r['error']}"
+            for r in state["watchlist"].get("readings", [])
+        )
+        or "（自選股清單為空）"
+    )
 
     movers_lines = "\n".join(
-        f"- {label}：" + "、".join(
+        f"- {label}："
+        + "、".join(
             f"{q['code']} {q['name']} {render.fmt_pct(q['change_pct'])}"
             for q in state["movers"].get(key, [])
         )

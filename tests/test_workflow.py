@@ -134,7 +134,9 @@ class TestSummarise:
             "trade_date": "2026-08-03",
             "market_index": {"index_name": "加權", "close": 1.0, "change": 1.0, "change_pct": 1.0},
             "grouped": {"符合": [{"code": "2330", "name": "台積電", "note": "x", "error": ""}]},
-            "readings": [{"code": "2330", "name": "台積電", "verdict": "符合", "note": "x", "error": ""}],
+            "readings": [
+                {"code": "2330", "name": "台積電", "verdict": "符合", "note": "x", "error": ""}
+            ],
             "failed": [],
         }
         report = nodes.summarise(RaisingLLM(), state)["report"]
@@ -201,24 +203,28 @@ class TestScanPayload:
 class TestEndToEnd:
     def test_full_graph_with_fake_llm(self, stub_cache):
         graph = build_scan_graph(FakeListChatModel(responses=["符合|||收在最高"]))
-        out = graph.invoke({
-            "focus": "收在最高的股票",
-            "criteria": {"sort_by": "turnover", "limit": 3},
-            "date": None,
-            "readings": [],
-        })
+        out = graph.invoke(
+            {
+                "focus": "收在最高的股票",
+                "criteria": {"sort_by": "turnover", "limit": 3},
+                "date": None,
+                "readings": [],
+            }
+        )
         assert out["trade_date"] == "2026-08-03"
         assert len(out["readings"]) == len(out["candidates"]) == 3
         assert "逐檔判讀" in out["report"]
 
     def test_no_candidates_short_circuits_without_calling_llm(self, stub_cache):
         graph = build_scan_graph(RaisingLLM())  # 一旦呼叫模型就會爆
-        out = graph.invoke({
-            "focus": "f",
-            "criteria": {"sort_by": "change_pct", "limit": 5, "min_change_pct": 999},
-            "date": None,
-            "readings": [],
-        })
+        out = graph.invoke(
+            {
+                "focus": "f",
+                "criteria": {"sort_by": "change_pct", "limit": 5, "min_change_pct": 999},
+                "date": None,
+                "readings": [],
+            }
+        )
         assert "沒有符合篩選條件" in out["report"]
         assert out["readings"] == []
 
@@ -235,12 +241,14 @@ class TestEndToEnd:
 
         monkeypatch.setattr(nodes, "read_one", flaky)
         graph = build_scan_graph(FakeListChatModel(responses=["符合|||ok"]))
-        out = graph.invoke({
-            "focus": "f",
-            "criteria": {"sort_by": "turnover", "limit": 4},
-            "date": None,
-            "readings": [],
-        })
-        assert len(out["readings"]) == 4       # 四檔都有結果
-        assert len(out["failed"]) == 1          # 其中一檔標記失敗
+        out = graph.invoke(
+            {
+                "focus": "f",
+                "criteria": {"sort_by": "turnover", "limit": 4},
+                "date": None,
+                "readings": [],
+            }
+        )
+        assert len(out["readings"]) == 4  # 四檔都有結果
+        assert len(out["failed"]) == 1  # 其中一檔標記失敗
         assert len(out["grouped"]["符合"]) == 3  # 其餘照常完成

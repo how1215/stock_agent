@@ -89,9 +89,7 @@ def render_watchlist(described: dict) -> str:
         *(quote_line(q) for q in described["quotes"]),
     ]
     if described.get("not_found"):
-        lines.append(
-            f"清單中查不到：{'、'.join(described['not_found'])}（可能已下市或代號有誤）"
-        )
+        lines.append(f"清單中查不到：{'、'.join(described['not_found'])}（可能已下市或代號有誤）")
     return "\n".join(lines)
 
 

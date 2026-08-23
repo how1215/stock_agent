@@ -83,9 +83,7 @@ class TestRemove:
 
     def test_can_remove_unresolvable_code(self, temp_watchlist):
         """已下市的個股不在市場資料裡，但仍必須能從清單移除。"""
-        temp_watchlist.write_text(
-            json.dumps({"codes": ["2330", "1234"]}), encoding="utf-8"
-        )
+        temp_watchlist.write_text(json.dumps({"codes": ["2330", "1234"]}), encoding="utf-8")
         assert watchlist.remove(["1234"])["codes"] == ["2330"]
 
 

@@ -114,15 +114,15 @@ Decisions where a reasonable alternative existed, what was chosen, and what it c
 
 ### 9. Two-tier verification
 
-*(Counts below are current: 154 tests, 12 eval cases.)*
+*(Counts below are current as of 2026-08-22: 172 tests, 12 eval cases.)*
 
 **Context.** How do you know an LLM agent still works after changing a prompt?
 
 **Decision.** Two suites with different jobs.
 
-`pytest` — 85 tests, ~0.4 s, no network, no model. Deterministic logic against recorded API responses. This is where correctness bugs get caught; the ETF misclassification in §11 was found here.
+`pytest` — 172 tests, ~0.7 s, no network, no model. Deterministic logic against recorded API responses. This is where correctness bugs get caught; the ETF misclassification in §11 was found here.
 
-`evals/` — 8 cases, requires vLLM. Asserts on behaviour: which tools were called, with which arguments, which strings must appear, and which must **not**. Expected numbers are placeholders (`{taiex_close}`, `{close:2330}`) resolved against the data layer at run time, so cases survive daily data changes instead of rotting overnight.
+`evals/` — 12 cases, requires vLLM. Asserts on behaviour: which tools were called, with which arguments, which strings must appear, and which must **not**. Expected numbers are placeholders (`{taiex_close}`, `{close:2330}`) resolved against the data layer at run time, so cases survive daily data changes instead of rotting overnight.
 
 **Rationale.** These fail for different reasons and must be runnable separately. A contributor without a GPU can still run `pytest`. Conversely, a passing `pytest` says nothing about whether the model picks the right tool — the thing most likely to break when a description is reworded.
 

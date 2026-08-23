@@ -1,10 +1,16 @@
 # Taiwan Stock Market Agent
 
+[![CI](https://github.com/how1215/stock_agent/actions/workflows/ci.yml/badge.svg)](https://github.com/how1215/stock_agent/actions/workflows/ci.yml)
+[![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A pre-market assistant for Taiwan Stock Exchange (TWSE) data, built as a **LangGraph agent system** running against a **locally-hosted LLM via vLLM**. It does two things: answers ad-hoc questions in natural language, and generates a scheduled daily briefing over a personal watchlist. Every number in every answer traces back to a deterministic Python computation.
 
 The application owns the agent loop — its own tools, state, checkpointing, tracing, and evaluation harness — rather than delegating it to an off-the-shelf coding harness. [The reasoning behind that choice is documented.](docs/DECISIONS.md#1-the-application-owns-the-agent-loop-not-a-coding-harness)
 
 Three LangGraph shapes are used, each because a simpler construct wouldn't do the job: a **prebuilt ReAct loop** for question answering, a **dynamic `Send` fan-out** for per-stock judgement across a screened candidate set, and a **static parallel join** for the daily briefing that composes the fan-out graph as a subgraph.
+
+[Architecture](docs/ARCHITECTURE.md) · [Engineering decisions](docs/DECISIONS.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 ```
 $ uv run python -m stock_agent.cli ask "台積電和鴻海今天收多少？" --trace
@@ -35,6 +41,7 @@ Note what the model did here: it passed *company names* rather than guessing tic
 - [Observability](#observability)
 - [Project structure](#project-structure)
 - [Not implemented](#not-implemented)
+- [Contributing and licence](#contributing-and-licence)
 
 ---
 
@@ -99,7 +106,7 @@ Full data flow and layer responsibilities: [docs/ARCHITECTURE.md](docs/ARCHITECT
 | | |
 |---|---|
 | **Tool interface as the contract** | Tool descriptions are the model's only basis for choosing a tool, so they carry the usage rules. Errors return *actionable* text (`"代號 9999 不存在。上市普通股代號為 4 位數字、首碼 1–9…"`) rather than exceptions, letting the model self-correct instead of dead-ending. |
-| **Two-tier verification** | `pytest` covers deterministic logic against recorded API fixtures — no network, no LLM, 0.4s. A separate eval harness covers agent *behaviour*: did it pick the right tool, with the right arguments, without inventing numbers? |
+| **Two-tier verification** | `pytest` covers deterministic logic against recorded API fixtures — no network, no LLM, typically under a second. A separate eval harness covers agent *behaviour*: did it pick the right tool, with the right arguments, without inventing numbers? |
 | **Evals that don't rot** | Expected values are placeholders (`{taiex_close}`, `{close:2330}`) resolved against the data layer at run time, so cases stay valid as market data changes daily. |
 | **Honest failure over plausible answers** | The upstream endpoint serves only the latest trading day. A request for a date not in the local cache returns an explicit error instead of silently substituting today's numbers — a wrong-date answer is worse than a refusal. |
 | **Fail-loud dependency check** | vLLM silently ignores tool definitions unless launched with the right flags; `bind_tools` does *not* raise. `cli verify` turns that into an explicit pass/fail. |
@@ -110,9 +117,21 @@ Trade-offs and rejected alternatives: [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Quickstart
 
-**Prerequisites:** Python 3.13+, [uv](https://docs.astral.sh/uv/), and a vLLM server.
+**Prerequisites:** Python 3.13+ and [uv](https://docs.astral.sh/uv/). A vLLM server is only required for natural-language agent queries, descriptive scans, and briefing generation; the data-only CLI and deterministic test suite run without a model or GPU.
 
-vLLM **must** be started with tool calling enabled, or the ReAct loop cannot work:
+```bash
+git clone https://github.com/how1215/stock_agent.git
+cd stock_agent
+uv sync --all-groups
+
+# No model required: fetch the latest TWSE close as JSON
+uv run python -m stock_agent.cli market
+
+# No network or model required: runs against recorded fixtures
+uv run pytest
+```
+
+For the full agent, copy `.env.example` to `.env` and point it at an OpenAI-compatible vLLM endpoint. vLLM **must** be started with tool calling enabled, or the ReAct loop cannot work:
 
 ```bash
 --enable-auto-tool-choice --tool-call-parser <parser>
@@ -121,7 +140,6 @@ vLLM **must** be started with tool calling enabled, or the ReAct loop cannot wor
 The parser depends on the model (`hermes` for Qwen-family, `llama3_json` for Llama 3, `mistral` for Mistral). Without these flags `bind_tools` raises no error — the model simply never emits a tool call, which is the hardest failure mode to diagnose. Verify explicitly:
 
 ```bash
-uv sync
 uv run python -m stock_agent.cli verify
 # → 通過：tool calling 正常：[{'name': 'get_stock_quote', 'args': {'codes': ['台積電']}, …}]
 ```
@@ -285,7 +303,9 @@ Each of these was verified against live responses, and each is a plausible way t
 ## Testing and evaluation
 
 ```bash
-uv run pytest                      # 154 tests, ~0.5s, no network, no LLM
+uv run pytest                      # 172 tests, ~0.7s, no network, no LLM
+uv run ruff check .                # import and static lint checks
+uv run ruff format --check .       # formatting contract used by CI
 uv run python evals/run_evals.py   # 12 behavioural cases, requires vLLM
 ```
 
@@ -351,7 +371,7 @@ stock_agent/
     ├── schema.py       normalised field definitions
     └── cache.py        trading-day file cache
 
-tests/                  154 tests, fixtures recorded from live API
+tests/                  172 tests, fixtures recorded from live API
 evals/                  behavioural regression cases + runner
 scripts/                launchd job + install helper
 .pi/                    optional Pi extension + agent instructions
@@ -371,7 +391,13 @@ Scoped out deliberately, with the reason in each case:
 - **Fundamentals** — `BWIBBU_ALL` (P/E, P/B, yield) is verified working but is a different analytical axis.
 - **Technical indicators** (MA/RSI/MACD) and volume-trend patterns (量增/量縮) — these need multiple trading days of history. The scheduled briefing job now accumulates one day file per trading day, so this becomes possible after a couple of weeks of runs; until then both `scan_market` and the briefing judge single-day shape only.
 - **Scanning all 1,086 stocks** — `scan_market` is capped at 30 candidates. Going wider needs either a cheaper first-pass filter or a much faster model; at ~2.9 s/stock, 1,086 would take over an hour.
-- **CI, linting, type checking** — the 154 tests are not run automatically anywhere, and there is no ruff or mypy configuration. Cheap to add and the most visible gap for anyone assessing the repo.
+- **Static type checking** — runtime state is documented with `TypedDict`, but mypy or pyright is not yet enforced. Adding it will require tightening the dynamic dict payloads at the JSON and LangGraph boundaries.
+
+## Contributing and licence
+
+Development setup, quality checks, and design constraints are documented in [CONTRIBUTING.md](CONTRIBUTING.md). Security issues should follow [SECURITY.md](SECURITY.md) rather than a public issue.
+
+Released under the [MIT License](LICENSE).
 
 ## Disclaimer
 
